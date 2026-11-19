@@ -178,7 +178,98 @@ main { max-width: 1000px; margin: 0 auto; padding: 24px 16px 48px; }
 
 footer { max-width: 1000px; margin: 0 auto; padding: 0 16px 32px; color: #555c6e; font-size: 11px; }
 
+/* Settings */
+.modal-box { max-height: 90vh; overflow-y: auto; }
+.set-h { margin: 18px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+.check { display: flex !important; gap: 8px; align-items: flex-start; font-weight: 400 !important; margin: 6px 0; cursor: pointer; }
+.check input { margin-top: 3px; }
+.inline { display: flex !important; align-items: center; justify-content: space-between; gap: 10px; font-weight: 400 !important; margin: 8px 0; }
+.inline select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+.linkbtn { background: none; border: 0; color: #ffb3b5; font: inherit; font-size: 12px; cursor: pointer; padding: 0; margin-left: 4px; text-decoration: underline; }
+
+/* Champ select banner */
+.cs-banner {
+  background: linear-gradient(90deg, rgba(229,72,77,.18), var(--panel)); border: 1px solid var(--accent);
+  border-radius: 10px; padding: 10px 14px; margin-bottom: 16px; font-weight: 600;
+}
+
+/* Builds */
+.build-bar { display: flex; gap: 8px; margin-bottom: 8px; }
+.build-bar input {
+  flex: 1; font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 10px 12px;
+}
+.ghostbtn { font: inherit; color: var(--muted); background: none; border: 1px solid var(--line); border-radius: 8px; padding: 0 14px; cursor: pointer; }
+.ghostbtn:hover { color: var(--text); }
+.champ-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; margin-top: 12px; }
+.cg {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px 4px; cursor: pointer;
+  color: var(--muted); font: inherit; font-size: 11px; display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.cg:hover { border-color: var(--accent); color: var(--text); }
+.cg img { width: 48px; height: 48px; border-radius: 8px; }
+.cg span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.build-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-top: 12px; }
+.bh-icon { width: 72px; height: 72px; border-radius: 14px; }
+.bh-main { flex: 1; min-width: 220px; }
+.bh-name { font-size: 24px; font-weight: 800; }
+.bh-name span { color: var(--muted); font-weight: 500; font-size: 18px; }
+.roles { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.role {
+  font: inherit; font-size: 12px; color: var(--muted); background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 4px 10px; cursor: pointer;
+}
+.role small { opacity: .7; }
+.role.active { color: var(--text); border-color: var(--accent); }
+.bh-actions { display: flex; flex-direction: column; gap: 6px; }
+.imp {
+  font: inherit; font-weight: 700; border-radius: 8px; padding: 9px 14px; cursor: pointer;
+  background: var(--accent); border: 1px solid var(--accent); color: var(--text);
+}
+.imp.ghost { background: none; border-color: var(--line); color: var(--muted); }
+.imp:disabled { opacity: .45; cursor: not-allowed; }
+
+.build-grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; }
+.rune-page { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.rune-page.main { border-top: 0; }
+.tree-name { display: flex; align-items: center; gap: 6px; font-weight: 700; margin-bottom: 6px; }
+.tree-name img.style { width: 22px; height: 22px; }
+.keystone { display: flex; align-items: center; gap: 8px; font-weight: 700; margin-bottom: 4px; }
+.keystone img { width: 44px; height: 44px; }
+.rr { display: flex; align-items: center; gap: 8px; margin: 3px 0; font-size: 13px; }
+.rr img { width: 28px; height: 28px; border-radius: 50%; background: var(--bg); }
+.shards { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+.shard { font-size: 11px; background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 2px 8px; color: var(--muted); }
+.rp-stats { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.rp-stats b { color: var(--text); }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-top: 8px; }
+
+.spellrow { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.spellrow img { width: 32px; height: 32px; border-radius: 6px; }
+.spellrow .sub { margin-left: 6px; }
+.maxorder { display: flex; align-items: center; gap: 8px; font-size: 22px; font-weight: 800; margin-bottom: 4px; }
+.maxorder span { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 2px 12px; }
+.maxorder i { color: var(--muted); font-style: normal; }
+.skillgrid { border-collapse: collapse; margin-top: 10px; font-size: 11px; }
+.skillgrid th { color: var(--muted); padding-right: 6px; }
+.skillgrid td { width: 20px; height: 20px; text-align: center; border: 1px solid var(--line); color: var(--text); }
+.skillgrid td.on { background: var(--accent); font-weight: 700; }
+
+.items-grid { display: flex; gap: 24px; flex-wrap: wrap; margin-bottom: 12px; }
+.ilabel { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.irow { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+.irow .sub { margin-left: 8px; }
+.irow.best .bi { border-color: var(--gold); }
+.arrow { color: var(--muted); font-size: 18px; padding: 0 2px; }
+.bi { width: 36px; height: 36px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); background: var(--panel2); }
+.bi img { width: 100%; height: 100%; display: block; }
+.iopt { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.iopt .ilabel { width: 100%; }
+.ichoice { display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; }
+
 @media (max-width: 760px) {
   .match { grid-template-columns: 1fr; }
   .teams { grid-template-columns: 1fr; }
+  .build-grid { grid-template-columns: 1fr; }
 }

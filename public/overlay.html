@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RiftScout overlay</title>
+  <style>
+    html, body { margin: 0; background: transparent; overflow: hidden; user-select: none; }
+    body { font: 12px/1.35 "Segoe UI", system-ui, sans-serif; color: #e6e8ee; }
+    .box {
+      margin: 4px; padding: 9px 11px; border-radius: 10px;
+      background: rgba(14, 16, 21, 0.84); border: 1px solid rgba(229, 72, 77, 0.5);
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+    }
+    .hd { display: flex; align-items: center; gap: 8px; }
+    .hd img { width: 30px; height: 30px; border-radius: 6px; }
+    .nm { font-weight: 700; font-size: 13px; }
+    .nm small { color: #8b92a5; font-weight: 400; }
+    .tm { margin-left: auto; color: #8b92a5; font-variant-numeric: tabular-nums; }
+    .st { display: flex; gap: 12px; margin: 7px 0 6px; color: #b5bac8; font-variant-numeric: tabular-nums; }
+    .st b { color: #fff; }
+    .gold { color: #e8b64c !important; }
+    .lv {
+      display: inline-block; margin-bottom: 6px; padding: 3px 9px; border-radius: 6px;
+      background: #e5484d; color: #fff; font-weight: 700; animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 50% { opacity: .65; } }
+    .label { color: #8b92a5; font-size: 11px; margin: 4px 0 3px; }
+    .nx { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+    .nx img { width: 30px; height: 30px; border-radius: 5px; border: 2px solid #e8b64c; }
+    .nx b { color: #e8b64c; }
+    .row { display: flex; gap: 4px; flex-wrap: wrap; }
+    .it { position: relative; width: 26px; height: 26px; border-radius: 5px; overflow: hidden; border: 1px solid #2a2f3e; background: #1e2230; }
+    .it img { width: 100%; height: 100%; display: block; }
+    .it.own { opacity: .35; }
+    .it.own::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; color: #4ade80; font-weight: 700; font-size: 15px; }
+    .it.next { border: 2px solid #e8b64c; }
+    .sm { color: #8b92a5; font-size: 11px; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <div id="o"></div>
+  <script>
+    const CDN = 'https://ddragon.leagueoflegends.com/cdn';
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const fmt = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+    const ROLE = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'ADC', UTILITY: 'Support' };
+
+    let misses = 0;
+    async function tick() {
+      let d;
+      try { d = await (await fetch('/api/overlay')).json(); } catch { return; }
+      const o = document.getElementById('o');
+      if (!d.inGame) { if (++misses >= 3) o.innerHTML = ''; return; } // hou die laaste inligting by 'n enkele trae antwoord
+      misses = 0;
+      const v = d.ddVersion;
+      const img = (kind, id) => (v ? `${CDN}/${v}/img/${kind}/${id}.png` : '');
+      const [k, de, a] = d.kda;
+      const next = d.path.find((p) => p.id === d.next);
+      o.innerHTML = `<div class="box">
+        <div class="hd">
+          ${d.champion ? `<img src="${img('champion', d.champion.id)}" alt="">` : ''}
+          <div class="nm">${esc(d.champion ? d.champion.name : 'RiftScout')} <small>${esc(ROLE[d.role] || '')}</small></div>
+          <div class="tm">${fmt(d.time)}</div>
+        </div>
+        <div class="st">
+          <span><b>${k}/${de}/${a}</b> KDA</span>
+          <span><b>${d.csPerMin.toFixed(1)}</b> CS/min</span>
+          <span><b class="gold">${Math.floor(d.gold)}</b> gold</span>
+        </div>
+        ${d.nextSkill ? `<div class="lv">Level up: ${esc(d.nextSkill)}</div>` : ''}
+        ${next ? `<div class="label">Next item</div>
+          <div class="nx"><img src="${img('item', next.id)}" alt=""><div><b>${esc(next.name)}</b><br>
+            <span class="sm">${next.gold} gold${d.gold >= next.gold ? ' · you can buy it now' : ` · ${Math.ceil(next.gold - d.gold)} more`}</span></div></div>` : ''}
+        ${d.path.length ? `<div class="label">Build path${d.maxOrder ? ` · max ${esc(d.maxOrder)}` : ''}</div>
+          <div class="row">${d.path.map((p) => `<div class="it ${p.owned ? 'own' : ''} ${p.id === d.next ? 'next' : ''}" title="${esc(p.name)}"><img src="${img('item', p.id)}" alt=""></div>`).join('')}</div>`
+          : '<div class="sm">No build data for this champion yet.</div>'}
+        <div class="sm">Ctrl+Shift+O hides this overlay</div>
+      </div>`;
+    }
+    tick();
+    setInterval(tick, 2000);
+  </script>
+</body>
+</html>

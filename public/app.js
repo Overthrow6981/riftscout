@@ -27,9 +27,9 @@ async function loadDDragon() {
   } catch { /* val terug na direkte laai */ }
   try {
     const versions = await (await fetch('https://ddragon.leagueoflegends.com/api/versions.json')).json();
-    dd = { version: versions[0], spells: {}, runes: {}, champions: {} };
+    dd = { version: versions[0], spells: {}, runes: {}, champions: {}, items: {} };
   } catch {
-    dd = { version: '15.1.1', spells: {}, runes: {}, champions: {} };
+    dd = { version: '15.1.1', spells: {}, runes: {}, champions: {}, items: {} };
   }
 }
 const champImg = (name) => `${CDN}/${dd.version}/img/champion/${encodeURIComponent(name)}.png`;
@@ -317,28 +317,58 @@ function renderLive(data) {
 }
 
 // ---------- Instellings ----------
-function openSettings() {
+let hasKey = false;
+async function openSettings() {
   $('settingsMsg').textContent = '';
   $('settingsMsg').className = 'hint';
+  $('keyState').textContent = hasKey ? '✓ A Riot API key is saved. Paste a new one below to replace it.' : 'No Riot API key saved yet.';
+  $('keyState').className = 'hint ' + (hasKey ? 'ok' : '');
+  $('removeKey').classList.toggle('hidden', !hasKey);
+  try {
+    const p = await api('/api/prefs');
+    $('prefCollect').checked = p.collectBuilds;
+    $('prefRegion').value = p.crawlRegion;
+    $('prefAuto').checked = p.autoImport;
+    $('prefReplace').checked = p.replaceRunePage;
+    $('prefOverlay').checked = p.overlay;
+    $('prefPos').value = p.overlayPosition;
+  } catch { /* gebruik wat daar is */ }
   $('settings').classList.remove('hidden');
   $('apiKey').focus();
+}
+async function postJson(url, data) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || 'Could not save.');
+  return body;
+}
+function setHasKey(v) {
+  hasKey = v;
+  $('keyWarning').classList.toggle('hidden', v);
 }
 $('settingsBtn').addEventListener('click', openSettings);
 $('settingsCancel').addEventListener('click', () => $('settings').classList.add('hidden'));
 $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) $('settings').classList.add('hidden'); });
+$('removeKey').addEventListener('click', async () => {
+  try { setHasKey((await postJson('/api/settings', { apiKey: '' })).hasKey); openSettings(); } catch (err) { $('settingsMsg').textContent = err.message; }
+});
 $('settingsSave').addEventListener('click', async () => {
   const msg = $('settingsMsg');
   try {
-    const r = await fetch('/api/settings', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ apiKey: $('apiKey').value.trim() }),
+    const key = $('apiKey').value.trim();
+    if (key) setHasKey((await postJson('/api/settings', { apiKey: key })).hasKey);
+    await postJson('/api/prefs', {
+      collectBuilds: $('prefCollect').checked,
+      crawlRegion: $('prefRegion').value,
+      autoImport: $('prefAuto').checked,
+      replaceRunePage: $('prefReplace').checked,
+      overlay: $('prefOverlay').checked,
+      overlayPosition: $('prefPos').value,
     });
-    const body = await r.json();
-    if (!r.ok) throw new Error(body.error || 'Could not save.');
     $('apiKey').value = '';
-    $('keyWarning').classList.toggle('hidden', body.hasKey);
-    msg.textContent = body.hasKey ? 'Saved! You can search players now.' : 'Key removed.';
+    msg.textContent = key ? 'Saved! You can search players now.' : 'Settings saved.';
     msg.className = 'hint ok';
+    pollBuildStatus();
     setTimeout(() => $('settings').classList.add('hidden'), 900);
   } catch (err) {
     msg.textContent = err.message;
@@ -346,12 +376,220 @@ $('settingsSave').addEventListener('click', async () => {
   }
 });
 
+// ---------- Builds ----------
+const ROLE_NAMES = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'ADC', UTILITY: 'Support' };
+const SHARDS = {
+  5008: 'Adaptive force', 5005: 'Attack speed', 5007: 'Ability haste', 5010: 'Move speed',
+  5001: 'Health scaling', 5011: 'Health', 5013: 'Tenacity', 5002: 'Armor', 5003: 'Magic resist',
+};
+let buildChamp = 0;
+let buildData = null;
+let lcuConnected = false;
+const itemName = (id) => (dd.items && dd.items[id] ? dd.items[id].name : `Item ${id}`);
+const itemIcon = (id, cls = '') => `<div class="bi ${cls}" title="${esc(itemName(id))}"><img src="${itemImg(id)}" alt="" loading="lazy"></div>`;
+const wr = (e) => (e && e.n ? pct(e.w / e.n) : '–');
+
+function champList() {
+  return Object.entries(dd.champions || {}).map(([key, c]) => ({ key: Number(key), ...c })).sort((a, b) => a.name.localeCompare(b.name));
+}
+function renderChampGrid() {
+  const q = $('champSearch').value.trim().toLowerCase();
+  const list = champList().filter((c) => !q || c.name.toLowerCase().includes(q));
+  $('champGrid').innerHTML = list.map((c) => `<button class="cg" data-key="${c.key}" title="${esc(c.name)}">
+      <img src="${champImg(c.id)}" alt="" loading="lazy"><span>${esc(c.name)}</span></button>`).join('')
+    || '<div class="notice">No champion found.</div>';
+}
+function showGrid(show) {
+  $('champGrid').classList.toggle('hidden', !show);
+  $('buildView').classList.toggle('hidden', show);
+  $('allChamps').classList.toggle('hidden', show || !buildChamp);
+}
+$('champSearch').addEventListener('input', () => { renderChampGrid(); showGrid(true); });
+$('allChamps').addEventListener('click', () => { $('champSearch').value = ''; renderChampGrid(); showGrid(true); });
+$('champGrid').addEventListener('click', (e) => {
+  const b = e.target.closest('.cg');
+  if (b) openBuild(Number(b.dataset.key), '', false);
+});
+
+async function openBuild(champKey, role, strict) {
+  buildChamp = champKey;
+  $('champSearch').value = '';
+  showGrid(false);
+  $('buildView').innerHTML = '<div class="notice">Loading build…</div>';
+  try {
+    buildData = await api(`/api/builds/champion/${champKey}?role=${encodeURIComponent(role || '')}${strict ? '&strict=1' : ''}`);
+    renderBuild();
+  } catch (err) {
+    $('buildView').innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
+  }
+}
+
+function runeImgTag(id, cls = '') {
+  return dd.runes[id] ? `<img class="${cls}" src="${runeImg(id)}" alt="" title="${esc(dd.runes[id].name)}">` : '';
+}
+function runePageHtml(e, games, main) {
+  const p = e.page;
+  const rn = (id) => (dd.runes[id] ? esc(dd.runes[id].name) : `#${id}`);
+  return `<div class="rune-page ${main ? 'main' : ''}">
+    <div class="tree">
+      <div class="tree-name">${runeImgTag(p.primaryStyleId, 'style')}${rn(p.primaryStyleId)}</div>
+      <div class="keystone">${runeImgTag(p.primary[0], 'ks')}<span>${rn(p.primary[0])}</span></div>
+      ${p.primary.slice(1).map((id) => `<div class="rr">${runeImgTag(id)}<span>${rn(id)}</span></div>`).join('')}
+    </div>
+    <div class="tree">
+      <div class="tree-name">${runeImgTag(p.subStyleId, 'style')}${rn(p.subStyleId)}</div>
+      ${p.secondary.map((id) => `<div class="rr">${runeImgTag(id)}<span>${rn(id)}</span></div>`).join('')}
+      <div class="shards">${p.shards.map((id) => `<span class="shard">${esc(SHARDS[id] || id)}</span>`).join('')}</div>
+    </div>
+    <div class="rp-stats"><b>${wr(e)}</b> win rate<br>${pct(e.n / games)} pick rate · ${e.n} games</div>
+  </div>`;
+}
+
+function renderBuild() {
+  const b = buildData;
+  const c = dd.champions[b.championId] || { id: '', name: `Champion ${b.championId}` };
+  const r = b.rec;
+  const enough = r && r.games >= b.minGames;
+  const roles = b.roles.map((x) => `<button class="role ${x.role === b.role ? 'active' : ''}" data-role="${x.role}">
+      ${ROLE_NAMES[x.role] || x.role} <small>${x.games}</small></button>`).join('');
+  const dis = lcuConnected && enough ? '' : 'disabled';
+  const tip = !enough ? 'Not enough data yet' : lcuConnected ? '' : 'Open the League client to import';
+  const head = `<div class="card build-head">
+      <img class="bh-icon" src="${champImg(c.id)}" alt="">
+      <div class="bh-main">
+        <div class="bh-name">${esc(c.name)} <span>${esc(ROLE_NAMES[b.role] || '')}</span></div>
+        <div class="sub">${enough ? `${r.games} games · ${pct(r.wins / r.games)} win rate · patch ${esc(b.patches.join(' + '))}` : 'Collecting data…'}</div>
+        <div class="roles">${roles}</div>
+      </div>
+      <div class="bh-actions" title="${esc(tip)}">
+        <button class="imp" data-what="runes,items" ${dis}>Import runes + items</button>
+        <button class="imp ghost" data-what="spells" ${dis}>Set spells</button>
+      </div>
+    </div>
+    <div id="importMsg" class="hint"></div>`;
+  if (!enough) {
+    const g = r ? r.games : 0;
+    $('buildView').innerHTML = head + `<div class="notice">Not enough games for ${esc(c.name)}${b.role ? ' ' + esc(ROLE_NAMES[b.role]) : ''} yet
+      (${g} of ${b.minGames}). RiftScout collects high-elo matches in the background while the app is open – check back soon.
+      Popular champions fill up first.</div>`;
+    return;
+  }
+  const opts = (list, label) => (list.length ? `<div class="iopt"><div class="ilabel">${label}</div>${list.map((e) => `
+      <div class="ichoice">${itemIcon(e.id)}<div class="sub">${wr(e)}<br>${e.n}</div></div>`).join('')}</div>` : '');
+  const seq = r.skills[0] ? r.skills[0].key : '';
+  const skillGrid = seq ? `<table class="skillgrid"><tbody>${['Q', 'W', 'E', 'R'].map((k) => `<tr><th>${k}</th>${
+    Array.from({ length: 15 }, (_, i) => `<td class="${seq[i] === k ? 'on' : ''}">${seq[i] === k ? i + 1 : ''}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '';
+
+  $('buildView').innerHTML = head + `
+    <div class="build-grid">
+      <div class="card"><h3>Runes</h3>${r.runes[0] ? runePageHtml(r.runes[0], r.games, true) : '<div class="sub">No rune data.</div>'}
+        ${r.runes.slice(1).length ? `<details><summary>Other popular pages</summary>${r.runes.slice(1).map((e) => runePageHtml(e, r.games, false)).join('')}</details>` : ''}
+      </div>
+      <div>
+        <div class="card"><h3>Summoner spells</h3>${r.spells.map((e) => `<div class="spellrow">${e.ids.map((s) =>
+          `<img src="${spellImg(s)}" alt="" title="${esc(dd.spells[s] ? dd.spells[s].name : '')}">`).join('')}
+          <div class="sub"><b>${wr(e)}</b> win · ${pct(e.n / r.games)} pick</div></div>`).join('')}</div>
+        <div class="card"><h3>Skill order</h3>
+          ${r.maxOrder[0] ? `<div class="maxorder">${r.maxOrder[0].key.split('>').map((k) => `<span>${k}</span>`).join('<i>›</i>')}</div>
+          <div class="sub">${wr(r.maxOrder[0])} win · ${pct(r.maxOrder[0].n / r.games)} pick</div>` : ''}
+          ${skillGrid}
+        </div>
+      </div>
+    </div>
+    <div class="card"><h3>Items</h3>
+      <div class="items-grid">
+        ${r.start.length ? `<div class="iblock"><div class="ilabel">Starting items</div>${r.start.map((e) => `<div class="irow">${e.ids.map((id) => itemIcon(id)).join('')}
+          <div class="sub">${wr(e)} · ${e.n}</div></div>`).join('')}</div>` : ''}
+        ${r.boots.length ? `<div class="iblock"><div class="ilabel">Boots</div>${r.boots.slice(0, 2).map((e) => `<div class="irow">${itemIcon(e.id)}
+          <div class="sub">${wr(e)} · ${pct(e.n / r.games)} pick</div></div>`).join('')}</div>` : ''}
+        ${r.core.length ? `<div class="iblock wide"><div class="ilabel">Core build</div>${r.core.slice(0, 2).map((e, i) => `<div class="irow ${i === 0 ? 'best' : ''}">${
+          e.ids.map((id) => itemIcon(id)).join('<span class="arrow">›</span>')}<div class="sub"><b>${wr(e)}</b> win · ${e.n} games</div></div>`).join('')}</div>` : ''}
+      </div>
+      <div class="items-grid">
+        ${opts(r.item4, '4th item')}${opts(r.item5, '5th item')}${opts(r.item6, '6th item')}
+      </div>
+    </div>`;
+}
+
+$('buildView').addEventListener('click', async (e) => {
+  const role = e.target.closest('.role');
+  if (role) { openBuild(buildChamp, role.dataset.role, true); return; }
+  const imp = e.target.closest('.imp');
+  if (!imp || !buildData) return;
+  const msg = $('importMsg');
+  msg.textContent = 'Importing…';
+  msg.className = 'hint';
+  try {
+    const res = await postJson('/api/lcu/import', { championId: buildData.championId, role: buildData.role, what: imp.dataset.what.split(',') });
+    msg.textContent = importText(res);
+    msg.className = 'hint ' + (res.ok ? 'ok' : 'err');
+  } catch (err) {
+    msg.textContent = err.message;
+    msg.className = 'hint err';
+  }
+});
+
+function importText(res) {
+  if (res.error) return res.error;
+  const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
+  return Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? 'imported ✓' : v.error}`).join(' · ');
+}
+
+async function pollBuildStatus() {
+  try {
+    const s = await api('/api/builds/status');
+    const parts = [];
+    const total = s.analysed + s.sharedMatches;
+    parts.push(`${total.toLocaleString()} high-elo matches analysed`);
+    if (s.sharedMatches) parts.push(`${s.sharedMatches.toLocaleString()} from shared data`);
+    if (!s.enabled) parts.push('background collection is off (Settings)');
+    else if (!s.hasKey) parts.push('add a Riot API key in Settings to collect more');
+    else if (s.lastError) parts.push(`collection stopped: ${s.lastError}`);
+    else if (s.running) parts.push(`collecting from ${(s.region || '').toUpperCase()}: ${s.state}${s.session ? ` (+${s.session} this session)` : ''}`);
+    $('buildStatus').textContent = parts.join(' · ');
+    $('buildStatus').className = 'hint' + (s.lastError ? ' err' : '');
+  } catch { /* ignore */ }
+}
+
+// ---------- Champ select ----------
+let lastCsKey = '';
+let lastImportAt = 0;
+async function pollLcu() {
+  let st;
+  try { st = await api('/api/lcu/state'); } catch { return; }
+  const was = lcuConnected;
+  lcuConnected = !!st.connected;
+  if (was !== lcuConnected && buildData) renderBuild();
+  const cs = st.phase === 'ChampSelect' ? st.champSelect : null;
+  const banner = $('csBanner');
+  if (!cs || !cs.championId) {
+    banner.classList.toggle('hidden', !(st.phase === 'ChampSelect'));
+    banner.textContent = st.phase === 'ChampSelect' ? 'Champ select – pick a champion and RiftScout will load its build.' : '';
+    if (st.phase !== 'ChampSelect') lastCsKey = '';
+    return;
+  }
+  const c = dd.champions[cs.championId] || { name: 'Champion' };
+  const key = `${cs.championId}:${cs.role}`;
+  if (key !== lastCsKey) {
+    lastCsKey = key;
+    document.querySelector('.tab[data-tab="builds"]').click();
+    openBuild(cs.championId, cs.role, false);
+  }
+  let text = `Champ select · ${c.name}${cs.role ? ' · ' + (ROLE_NAMES[cs.role] || '') : ''}`;
+  const li = st.lastImport;
+  if (li && li.championId === cs.championId) text += ' — ' + importText(li);
+  else if (!cs.locked) text += ' — lock in to import runes and items';
+  banner.textContent = text;
+  banner.classList.remove('hidden');
+  if (li && li.at && li.at !== lastImportAt) lastImportAt = li.at;
+}
+
 // ---------- Begin ----------
 (async function init() {
   await loadDDragon();
   try {
     const st = await api('/api/status');
-    $('keyWarning').classList.toggle('hidden', st.hasKey);
+    setHasKey(st.hasKey);
     if (st.version) $('appVersion').textContent = `RiftScout v${st.version}`;
     // Maak Settings net die heel eerste keer vanself oop
     if (!st.hasKey && !store.get('settingsSeen')) { store.set('settingsSeen', '1'); openSettings(); }
@@ -364,6 +602,12 @@ $('settingsSave').addEventListener('click', async () => {
   $('riotId').value = riotId;
   if (hId) search(region, riotId);
 
+  renderChampGrid();
+  showGrid(true);
+  pollBuildStatus();
+  setInterval(pollBuildStatus, 5000);
+  pollLcu();
+  setInterval(pollLcu, 2000);
   pollLive();
   setInterval(pollLive, 3000);
 })();
