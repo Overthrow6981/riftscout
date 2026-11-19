@@ -1,6 +1,12 @@
 # RiftScout
 
-A simple League of Legends companion app for Windows: player profiles, ranked stats, match history and a live in-game view.
+A League of Legends companion app for Windows – like Blitz, but simple:
+
+- **Builds & runes** for every champion and role, calculated from Challenger, Grandmaster and Master ranked games: rune page, summoner spells, skill order, starting items, boots, core build and 4th–6th item options, with win and pick rates.
+- **Champ select auto-import:** lock in a champion and RiftScout puts the rune page and an item set straight into your League client (spells with one click).
+- **In-game overlay:** next item to buy, "Level up" reminder, KDA, CS/min and gold on top of the game (Borderless or Windowed mode; Ctrl+Shift+O hides it).
+- **Profiles & match history:** rank, LP, mastery and recent games for any Riot ID.
+- **Live game view** of both teams.
 
 ## Download
 
@@ -14,16 +20,13 @@ The app updates itself: when a new version is released it downloads in the backg
 
 1. Get a free key at [developer.riotgames.com](https://developer.riotgames.com) (sign in → Development API Key).
 2. Open RiftScout → **⚙ Settings** → paste the key → Save. (Development keys expire every 24 hours.)
-3. Search any player by Riot ID (`Name#TAG`).
+3. Keep RiftScout open: it collects high-elo games in the background and the **Builds** tab fills up. Popular champions are ready first.
 
-The **Live Game** tab works without a key – start a match (Practice Tool works) and it fills in automatically.
+## Shared build data (for the repo owner)
 
-## Features
+The workflow `.github/workflows/collect-builds.yml` collects games every 4 hours and publishes `builds.json` in the **build-data** release. Every RiftScout app downloads it, so builds work immediately – even without an own API key.
 
-- Profile: icon, level, Solo/Flex rank, LP, win rate, top mastery
-- Match history: champion, spells, runes, KDA, CS/min, kill participation, items, all 10 players (click a name to look them up)
-- Summary of recent games: W/L, average KDA, best champions
-- Live Game: both teams, KDA, CS, items, respawn timers, your gold, recent events
+It needs a repository secret **`RIOT_API_KEY`** (Settings → Secrets and variables → Actions). A Development key expires after 24 hours; a **Personal API Key** (developer.riotgames.com → Register Product → Personal API Key) does not expire.
 
 ## Development
 
@@ -31,6 +34,7 @@ The **Live Game** tab works without a key – start a match (Practice Tool works
 npm install
 npm start          # desktop app (Electron)
 npm run server     # web version only at http://localhost:3000
+npm run collect -- --region na1 --minutes 30   # collect build data (needs RIOT_API_KEY)
 ```
 
 ### Releasing an update
