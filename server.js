@@ -128,6 +128,9 @@ function simplifyParticipant(p, teamKills) {
   const styles = (p.perks && p.perks.styles) || [];
   return {
     puuid: p.puuid,
+    championId: p.championId,
+    placement: p.placement || 0,           // Arena: 1-8
+    subteam: p.playerSubteamId || 0,       // Arena: span-nommer
     name: p.riotIdGameName || p.summonerName || 'Unknown',
     tag: p.riotIdTagline || '',
     teamId: p.teamId,
@@ -210,6 +213,19 @@ async function getDDragon() {
 
 // ---------- Roetes ----------
 const app = express();
+app.disable('x-powered-by');
+
+// Sekuriteit: net ons eie venster mag die plaaslike server gebruik.
+// Blokkeer ander webwerwe (CSRF) en DNS-rebinding.
+let LISTEN_PORT = 0;
+app.use((req, res, next) => {
+  const okHosts = [`127.0.0.1:${LISTEN_PORT}`, `localhost:${LISTEN_PORT}`];
+  if (!okHosts.includes(req.headers.host)) return res.status(403).send('Forbidden');
+  const origin = req.headers.origin;
+  if (origin && !okHosts.some((h) => origin === `http://${h}`)) return res.status(403).json({ error: 'Forbidden' });
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const wrap = (fn) => (req, res) =>
@@ -227,6 +243,7 @@ app.get('/api/status', (req, res) => res.json({ hasKey: !!API_KEY, version: APP_
 
 // Stoor die speler se eie Riot API-sleutel plaaslik (nooit in die app self ingebou nie)
 app.post('/api/settings', wrap(async (req, res) => {
+  if (!req.is('application/json')) throw httpError(415, 'Expected JSON.');
   const key = String((req.body && req.body.apiKey) || '').trim();
   if (key && !/^RGAPI-[0-9a-f-]{36}$/i.test(key)) throw httpError(400, 'That does not look like a Riot API key (it starts with RGAPI-).');
   const cfg = loadConfig();
@@ -277,12 +294,13 @@ app.get('/api/matches', wrap(async (req, res) => {
   const count = Math.min(20, Math.max(1, Number(req.query.count) || 10));
   const route = matchRoute(region);
   const ids = await riot(route, `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=${start}&count=${count}`);
-  const matches = [];
-  for (const id of ids) {
-    try { matches.push(simplifyMatch(await getMatch(route, id), puuid)); }
-    catch (err) { if (err.status === 401 || err.status === 403) throw err; /* slaan stukkende wedstryd oor */ }
-  }
-  res.json({ matches, hasMore: ids.length === count });
+  // Parallel (die rate limiter hou steeds by Riot se limiete), volgorde bly behoue
+  const results = await Promise.all(ids.map((id) =>
+    getMatch(route, id).then((m) => simplifyMatch(m, puuid)).catch((err) => {
+      if (err.status === 401 || err.status === 403) throw err;
+      return null; // slaan stukkende wedstryd oor
+    })));
+  res.json({ matches: results.filter(Boolean), hasMore: ids.length === count });
 }));
 
 app.get('/api/live', wrap(async (req, res) => res.json(await getLiveData())));
@@ -301,7 +319,10 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
   const saved = loadConfig().apiKey;
   if (saved) API_KEY = saved;
   return new Promise((resolve, reject) => {
-    const server = app.listen(port, '127.0.0.1', () => resolve(server.address().port));
+    const server = app.listen(port, '127.0.0.1', () => {
+      LISTEN_PORT = server.address().port;
+      resolve(LISTEN_PORT);
+    });
     server.on('error', reject);
   });
 }

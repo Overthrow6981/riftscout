@@ -17,9 +17,12 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 async function boot() {
+  // Vaste poort sodat die blad se oorsprong (en dus localStorage: laaste soektog ens.) dieselfde bly.
+  // As die poort besig is, kies die stelsel 'n vrye een.
   let port;
+  const dataDir = app.getPath('userData');
   try {
-    port = await startServer({ port: 0, dataDir: app.getPath('userData') });
+    port = await startServer({ port: 51735, dataDir }).catch(() => startServer({ port: 0, dataDir }));
   } catch (err) {
     dialog.showErrorBox('RiftScout', 'Could not start: ' + err.message);
     app.quit();
@@ -34,8 +37,10 @@ async function boot() {
     backgroundColor: '#0e1015',
     title: 'RiftScout',
     autoHideMenuBar: true,
+    show: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   });
+  win.once('ready-to-show', () => win.show());
   win.loadURL(`http://127.0.0.1:${port}`);
 
   // Eksterne skakels (bv. developer.riotgames.com) gaan na die gewone blaaier
