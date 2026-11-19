@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RiftScout</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="logo">◆</span> RiftScout</div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="profile">Profile</button>
+      <button class="tab" data-tab="live">Live Game <span id="liveDot" class="dot"></span></button>
+    </nav>
+    <button id="settingsBtn" class="settings-btn" title="Settings">⚙ Settings</button>
+  </header>
+
+  <div id="settings" class="modal hidden" role="dialog" aria-label="Settings">
+    <div class="modal-box">
+      <h2>Settings</h2>
+      <label for="apiKey">Riot API key</label>
+      <input id="apiKey" type="password" placeholder="RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" />
+      <p class="hint">Get a free key at <a href="https://developer.riotgames.com" target="_blank" rel="noopener">developer.riotgames.com</a>
+        (sign in → Development API Key). Development keys expire every 24 hours. The key is only stored on this computer.</p>
+      <div id="settingsMsg" class="hint"></div>
+      <div class="modal-actions">
+        <button id="settingsCancel" class="ghost" type="button">Close</button>
+        <button id="settingsSave" type="button">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <!-- PROFILE -->
+    <section id="tab-profile" class="tabpane active">
+      <form id="searchForm" class="search">
+        <select id="region" aria-label="Region">
+          <option value="na1">NA</option>
+          <option value="euw1">EUW</option>
+          <option value="eun1">EUNE</option>
+          <option value="kr">KR</option>
+          <option value="br1">BR</option>
+          <option value="la1">LAN</option>
+          <option value="la2">LAS</option>
+          <option value="oc1">OCE</option>
+          <option value="tr1">TR</option>
+          <option value="ru">RU</option>
+          <option value="jp1">JP</option>
+          <option value="me1">ME</option>
+          <option value="sg2">SEA</option>
+          <option value="tw2">TW</option>
+          <option value="vn2">VN</option>
+        </select>
+        <input id="riotId" type="text" placeholder="Riot ID, e.g. Faker#KR1" autocomplete="off" />
+        <button type="submit">Search</button>
+      </form>
+      <div id="keyWarning" class="notice hidden">
+        No Riot API key yet – click <b>⚙ Settings</b> (top right) and paste your key to search players.
+        The Live Game tab works without a key.
+      </div>
+      <div id="message" class="notice hidden"></div>
+      <div id="profile"></div>
+      <div id="summary"></div>
+      <div id="matches"></div>
+      <button id="loadMore" class="loadmore hidden">Load more</button>
+    </section>
+
+    <!-- LIVE -->
+    <section id="tab-live" class="tabpane">
+      <div id="live"><div class="notice">Checking for a live game…</div></div>
+    </section>
+  </main>
+
+  <footer>
+    <span id="appVersion"></span>
+    RiftScout isn't endorsed by Riot Games and doesn't reflect the views or opinions of Riot Games or anyone
+    officially involved in producing or managing Riot Games properties. Riot Games, and all associated
+    properties are trademarks or registered trademarks of Riot Games, Inc.
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
