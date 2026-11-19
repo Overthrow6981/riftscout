@@ -33,6 +33,9 @@ async function loadDDragon() {
   }
 }
 const champImg = (name) => `${CDN}/${dd.version}/img/champion/${encodeURIComponent(name)}.png`;
+// Match-data se championName verskil soms van Data Dragon (bv. "FiddleSticks"), so gebruik die ID waar moontlik
+const champImgFor = (p) => champImg((dd.champions[p.championId] && dd.champions[p.championId].id) || p.championName);
+const ARENA = new Set([1700, 1710]);
 const itemImg = (id) => `${CDN}/${dd.version}/img/item/${id}.png`;
 const iconImg = (id) => `${CDN}/${dd.version}/img/profileicon/${id}.png`;
 const spellImg = (key) => dd.spells[key] ? `${CDN}/${dd.version}/img/spell/${dd.spells[key].image}` : '';
@@ -48,6 +51,7 @@ function timeAgo(ts) {
 const fmtDur = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
 const kdaRatio = (k, d, a) => (d === 0 ? 'Perfect' : ((k + a) / d).toFixed(2));
 const pct = (x) => `${Math.round(x * 100)}%`;
+const ordinal = (n) => n + (n % 10 === 1 && n % 100 !== 11 ? 'st' : n % 10 === 2 && n % 100 !== 12 ? 'nd' : n % 10 === 3 && n % 100 !== 13 ? 'rd' : 'th');
 function showMessage(text, isError = false) {
   const m = $('message');
   if (!text) { m.classList.add('hidden'); return; }
@@ -165,15 +169,16 @@ function renderSummary() {
     c.games++; if (m.me.win) c.wins++;
   }
   const n = games.length;
-  const top = Object.entries(champs).sort((x, y) => y[1].games - x[1].games).slice(0, 3);
+  const top = Object.entries(champs).sort((x, y) => y[1].games - x[1].games).slice(0, 3)
+    .map(([name, s]) => [name, s, games.find((m) => m.me.championName === name).me]);
   $('summary').innerHTML = `
     <div class="card"><h3>Last ${n} games</h3>
       <div class="summary">
         <div><div class="big">${wins}W ${n - wins}L</div><div class="sub">${pct(wins / n)} win rate</div></div>
         <div><div class="big">${(k / n).toFixed(1)} / ${(d / n).toFixed(1)} / ${(a / n).toFixed(1)}</div>
           <div class="sub">${kdaRatio(k, d, a)} KDA · ${pct(kp / n)} kill participation</div></div>
-        <div class="topchamps">${top.map(([name, s]) => `
-          <div class="tc"><img src="${champImg(name)}" alt="">
+        <div class="topchamps">${top.map(([name, s, p]) => `
+          <div class="tc"><img src="${champImgFor(p)}" alt="" title="${esc(name)}">
             <div><b>${pct(s.wins / s.games)}</b><div class="sub">${s.wins}W ${s.games - s.wins}L</div></div></div>`).join('')}
         </div>
       </div>
@@ -183,17 +188,29 @@ function renderSummary() {
 function renderMatch(m) {
   const me = m.me;
   if (!me) return '';
-  const cls = m.remake ? 'remake' : me.win ? 'win' : 'loss';
-  const result = m.remake ? 'Remake' : me.win ? 'Victory' : 'Defeat';
+  const arena = ARENA.has(m.queueId);
+  const won = arena && me.placement ? me.placement <= 4 : me.win; // Arena: top 4 = wen
+  const cls = m.remake ? 'remake' : won ? 'win' : 'loss';
+  const result = m.remake ? 'Remake' : arena && me.placement ? `${ordinal(me.placement)} place` : me.win ? 'Victory' : 'Defeat';
   const mins = m.duration / 60;
   const items = me.items.map((id) =>
     `<div class="it">${id ? `<img src="${itemImg(id)}" alt="" loading="lazy">` : ''}</div>`).join('');
   const spells = me.spells.map((s) => `<img src="${spellImg(s)}" alt="" title="${esc(dd.spells[s]?.name || '')}">`).join('');
   const runes = [me.keystone, me.secondaryStyle]
     .map((r) => runeImg(r) ? `<img src="${runeImg(r)}" alt="" title="${esc(dd.runes[r].name)}">` : '<img alt="">').join('');
-  const team = (id) => m.players.filter((p) => p.teamId === id).map((p) => `
-    <div class="p ${p.puuid === me.puuid ? 'me' : ''}"><img src="${champImg(p.championName)}" alt="" loading="lazy">
-      <a data-id="${esc(p.name + '#' + p.tag)}" title="${esc(p.name + '#' + p.tag)}">${esc(p.name)}</a></div>`).join('');
+  const playerRow = (p) => `
+    <div class="p ${p.puuid === me.puuid ? 'me' : ''}"><img src="${champImgFor(p)}" alt="" loading="lazy">
+      <a data-id="${esc(p.name + '#' + p.tag)}" title="${esc(p.name + '#' + p.tag)}">${esc(p.name)}</a></div>`;
+  const team = (id) => m.players.filter((p) => p.teamId === id).map(playerRow).join('');
+  // Arena: wys spanne volgens plek (1ste tot 8ste), twee per span
+  const arenaTeams = () => {
+    const byTeam = {};
+    for (const p of m.players) (byTeam[p.subteam] ||= []).push(p);
+    const sorted = Object.values(byTeam).sort((a, b) => (a[0].placement || 9) - (b[0].placement || 9));
+    const half = Math.ceil(sorted.length / 2);
+    const col = (list) => list.map((t) => t.map(playerRow).join('')).join('');
+    return `<div>${col(sorted.slice(0, half))}</div><div>${col(sorted.slice(half))}</div>`;
+  };
   const multi = { 2: 'Double Kill', 3: 'Triple Kill', 4: 'Quadra Kill', 5: 'Penta Kill' }[Math.min(me.largestMultiKill, 5)];
 
   return `
@@ -205,7 +222,7 @@ function renderMatch(m) {
         <div>${fmtDur(m.duration)}</div>
       </div>
       <div class="mine">
-        <div class="champ"><img src="${champImg(me.championName)}" alt="${esc(me.championName)}"><span class="clvl">${me.champLevel}</span></div>
+        <div class="champ"><img src="${champImgFor(me)}" alt="${esc(me.championName)}"><span class="clvl">${me.champLevel}</span></div>
         <div class="spells">${spells}${runes}</div>
         <div class="kda">
           <div class="score">${me.kills} / <span class="d">${me.deaths}</span> / ${me.assists}</div>
@@ -218,7 +235,7 @@ function renderMatch(m) {
         </div>
         <div class="items">${items}</div>
       </div>
-      <div class="players"><div>${team(100)}</div><div>${team(200)}</div></div>
+      <div class="players">${arena ? arenaTeams() : `<div>${team(100)}</div><div>${team(200)}</div>`}</div>
     </div>`;
 }
 
@@ -336,7 +353,8 @@ $('settingsSave').addEventListener('click', async () => {
     const st = await api('/api/status');
     $('keyWarning').classList.toggle('hidden', st.hasKey);
     if (st.version) $('appVersion').textContent = `RiftScout v${st.version}`;
-    if (!st.hasKey) openSettings();
+    // Maak Settings net die heel eerste keer vanself oop
+    if (!st.hasKey && !store.get('settingsSeen')) { store.set('settingsSeen', '1'); openSettings(); }
   } catch { /* ignore */ }
 
   const [hRegion, hId] = location.hash.slice(1).split('/');
