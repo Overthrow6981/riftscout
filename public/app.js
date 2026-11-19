@@ -384,6 +384,8 @@ const SHARDS = {
 };
 let buildChamp = 0;
 let buildData = null;
+const champName = (id) => (dd.champions[id] ? dd.champions[id].name : `Champion ${id}`);
+const champIcon = (id) => champImg(dd.champions[id] ? dd.champions[id].id : '');
 let lcuConnected = false;
 const itemName = (id) => (dd.items && dd.items[id] ? dd.items[id].name : `Item ${id}`);
 const itemIcon = (id, cls = '') => `<div class="bi ${cls}" title="${esc(itemName(id))}"><img src="${itemImg(id)}" alt="" loading="lazy"></div>`;
@@ -408,16 +410,16 @@ $('champSearch').addEventListener('input', () => { renderChampGrid(); showGrid(t
 $('allChamps').addEventListener('click', () => { $('champSearch').value = ''; renderChampGrid(); showGrid(true); });
 $('champGrid').addEventListener('click', (e) => {
   const b = e.target.closest('.cg');
-  if (b) openBuild(Number(b.dataset.key), '', false);
+  if (b) openBuild(Number(b.dataset.key), '', false, null);
 });
 
-async function openBuild(champKey, role, strict) {
+async function openBuild(champKey, role, strict, vs) {
   buildChamp = champKey;
   $('champSearch').value = '';
   showGrid(false);
   $('buildView').innerHTML = '<div class="notice">Loading build…</div>';
   try {
-    buildData = await api(`/api/builds/champion/${champKey}?role=${encodeURIComponent(role || '')}${strict ? '&strict=1' : ''}`);
+    buildData = await api(`/api/builds/champion/${champKey}?role=${encodeURIComponent(role || '')}${strict ? '&strict=1' : ''}${vs ? `&vs=${vs}` : ''}`);
     renderBuild();
   } catch (err) {
     $('buildView').innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
@@ -460,6 +462,13 @@ function renderBuild() {
         <div class="bh-name">${esc(c.name)} <span>${esc(ROLE_NAMES[b.role] || '')}</span></div>
         <div class="sub">${enough ? `${r.games} games · ${pct(r.wins / r.games)} win rate · patch ${esc(b.patches.join(' + '))}` : 'Collecting data…'}</div>
         <div class="roles">${roles}</div>
+        ${b.opponents.length ? `<div class="vs-pick">vs <select id="vsSelect">
+          <option value="">any opponent</option>
+          ${b.opponents.map((o) => `<option value="${o.championId}" ${r && r.vs && r.vs.championId === o.championId ? 'selected' : ''}>${esc(champName(o.championId))} (${o.games})</option>`).join('')}
+        </select></div>` : ''}
+        ${r && r.vs ? `<div class="vs-line"><img src="${champIcon(r.vs.championId)}" alt="">
+          ${r.vs.games >= 5 ? `<b class="${r.vs.wins / r.vs.games >= 0.5 ? 'good' : 'bad'}">${pct(r.vs.wins / r.vs.games)}</b> win vs ${esc(champName(r.vs.championId))} · ${r.vs.games} games` : `Few games vs ${esc(champName(r.vs.championId))} yet (${r.vs.games})`}
+          ${r.fromMatchup.length ? ' · <span class="mtag">matchup build</span>' : ` · general build (matchup build from ${b.matchupMin} games)`}</div>` : ''}
       </div>
       <div class="bh-actions" title="${esc(tip)}">
         <button class="imp" data-what="runes,items" ${dis}>Import runes + items</button>
@@ -474,6 +483,7 @@ function renderBuild() {
       Popular champions fill up first.</div>`;
     return;
   }
+  const tag = (k) => (r.fromMatchup.includes(k) ? ` <span class="mtag">vs ${esc(champName(r.vs.championId))}</span>` : '');
   const opts = (list, label) => (list.length ? `<div class="iopt"><div class="ilabel">${label}</div>${list.map((e) => `
       <div class="ichoice">${itemIcon(e.id)}<div class="sub">${wr(e)}<br>${e.n}</div></div>`).join('')}</div>` : '');
   const seq = r.skills[0] ? r.skills[0].key : '';
@@ -482,21 +492,22 @@ function renderBuild() {
 
   $('buildView').innerHTML = head + `
     <div class="build-grid">
-      <div class="card"><h3>Runes</h3>${r.runes[0] ? runePageHtml(r.runes[0], r.games, true) : '<div class="sub">No rune data.</div>'}
+      <div class="card"><h3>Runes${tag('runes')}</h3>${r.runes[0] ? runePageHtml(r.runes[0], r.games, true) : '<div class="sub">No rune data.</div>'}
         ${r.runes.slice(1).length ? `<details><summary>Other popular pages</summary>${r.runes.slice(1).map((e) => runePageHtml(e, r.games, false)).join('')}</details>` : ''}
       </div>
       <div>
-        <div class="card"><h3>Summoner spells</h3>${r.spells.map((e) => `<div class="spellrow">${e.ids.map((s) =>
+        <div class="card"><h3>Summoner spells${tag('spells')}</h3>${r.spells.map((e) => `<div class="spellrow">${e.ids.map((s) =>
           `<img src="${spellImg(s)}" alt="" title="${esc(dd.spells[s] ? dd.spells[s].name : '')}">`).join('')}
           <div class="sub"><b>${wr(e)}</b> win · ${pct(e.n / r.games)} pick</div></div>`).join('')}</div>
-        <div class="card"><h3>Skill order</h3>
+        <div class="card"><h3>Skill order${tag('maxOrder')}</h3>
           ${r.maxOrder[0] ? `<div class="maxorder">${r.maxOrder[0].key.split('>').map((k) => `<span>${k}</span>`).join('<i>›</i>')}</div>
           <div class="sub">${wr(r.maxOrder[0])} win · ${pct(r.maxOrder[0].n / r.games)} pick</div>` : ''}
           ${skillGrid}
         </div>
       </div>
     </div>
-    <div class="card"><h3>Items</h3>
+    ${matchupCard(b)}
+    <div class="card"><h3>Items${tag('core')}</h3>
       <div class="items-grid">
         ${r.start.length ? `<div class="iblock"><div class="ilabel">Starting items</div>${r.start.map((e) => `<div class="irow">${e.ids.map((id) => itemIcon(id)).join('')}
           <div class="sub">${wr(e)} · ${e.n}</div></div>`).join('')}</div>` : ''}
@@ -511,16 +522,34 @@ function renderBuild() {
     </div>`;
 }
 
+function matchupCard(b) {
+  if (!b.strongAgainst.length && !b.weakAgainst.length) return '';
+  const row = (m) => `<button class="mu" data-vs="${m.championId}" title="Show the build vs ${esc(champName(m.championId))}">
+      <img src="${champIcon(m.championId)}" alt=""><span>${esc(champName(m.championId))}</span>
+      <b class="${m.wr >= 0.5 ? 'good' : 'bad'}">${pct(m.wr)}</b><small>${m.games}</small></button>`;
+  return `<div class="card"><h3>Matchups</h3><div class="mu-grid">
+      <div><div class="ilabel">Strong against</div>${b.strongAgainst.map(row).join('') || '<div class="sub">No winning matchups yet.</div>'}</div>
+      <div><div class="ilabel">Weak against (counters)</div>${b.weakAgainst.map(row).join('') || '<div class="sub">No losing matchups yet.</div>'}</div>
+    </div><div class="sub">Click a champion to see the build against it.</div></div>`;
+}
+
+$('buildView').addEventListener('change', (e) => {
+  if (e.target.id === 'vsSelect') openBuild(buildChamp, buildData.role, true, Number(e.target.value) || null);
+});
+
 $('buildView').addEventListener('click', async (e) => {
+  const mu = e.target.closest('.mu');
+  if (mu) { openBuild(buildChamp, buildData.role, true, Number(mu.dataset.vs)); return; }
   const role = e.target.closest('.role');
-  if (role) { openBuild(buildChamp, role.dataset.role, true); return; }
+  if (role) { openBuild(buildChamp, role.dataset.role, true, buildData.rec && buildData.rec.vs ? buildData.rec.vs.championId : null); return; }
   const imp = e.target.closest('.imp');
   if (!imp || !buildData) return;
   const msg = $('importMsg');
   msg.textContent = 'Importing…';
   msg.className = 'hint';
   try {
-    const res = await postJson('/api/lcu/import', { championId: buildData.championId, role: buildData.role, what: imp.dataset.what.split(',') });
+    const vs = buildData.rec && buildData.rec.vs ? buildData.rec.vs.championId : null;
+    const res = await postJson('/api/lcu/import', { championId: buildData.championId, role: buildData.role, vs, what: imp.dataset.what.split(',') });
     msg.textContent = importText(res);
     msg.className = 'hint ' + (res.ok ? 'ok' : 'err');
   } catch (err) {
@@ -532,7 +561,9 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  return Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? 'imported ✓' : v.error}`).join(' · ');
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? 'imported ✓' : v.error}`);
+  if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
+  return parts.join(' · ');
 }
 
 async function pollBuildStatus() {
@@ -554,6 +585,23 @@ async function pollBuildStatus() {
 // ---------- Champ select ----------
 let lastCsKey = '';
 let lastImportAt = 0;
+let counterKey = '';
+let counterHtml = '';
+async function loadCounters(enemyId, role) {
+  const key = `${enemyId}:${role}`;
+  if (key === counterKey) return counterHtml;
+  counterKey = key;
+  counterHtml = '';
+  try {
+    const c = await api(`/api/builds/counters/${enemyId}?role=${role}`);
+    if (c.counters.length) {
+      counterHtml = ` — counter picks vs ${esc(champName(enemyId))}: ` + c.counters.slice(0, 5).map((x) =>
+        `<span class="cp"><img src="${champIcon(x.championId)}" alt="">${esc(champName(x.championId))} <b>${pct(x.wr)}</b></span>`).join('');
+    }
+  } catch { /* geen counters nie */ }
+  return counterHtml;
+}
+
 async function pollLcu() {
   let st;
   try { st = await api('/api/lcu/state'); } catch { return; }
@@ -564,18 +612,20 @@ async function pollLcu() {
   const banner = $('csBanner');
   if (!cs || !cs.championId) {
     banner.classList.toggle('hidden', !(st.phase === 'ChampSelect'));
-    banner.textContent = st.phase === 'ChampSelect' ? 'Champ select – pick a champion and RiftScout will load its build.' : '';
-    if (st.phase !== 'ChampSelect') lastCsKey = '';
+    if (st.phase !== 'ChampSelect') { lastCsKey = ''; banner.textContent = ''; return; }
+    let html = 'Champ select – pick a champion and RiftScout will load its build.';
+    if (cs && cs.vs && cs.role) html = `Champ select · enemy ${esc(ROLE_NAMES[cs.role] || '')}: ${esc(champName(cs.vs))}` + await loadCounters(cs.vs, cs.role);
+    banner.innerHTML = html;
     return;
   }
   const c = dd.champions[cs.championId] || { name: 'Champion' };
-  const key = `${cs.championId}:${cs.role}`;
+  const key = `${cs.championId}:${cs.role}:${cs.vs || ''}`;
   if (key !== lastCsKey) {
     lastCsKey = key;
     document.querySelector('.tab[data-tab="builds"]').click();
-    openBuild(cs.championId, cs.role, false);
+    openBuild(cs.championId, cs.role, false, cs.vs || null);
   }
-  let text = `Champ select · ${c.name}${cs.role ? ' · ' + (ROLE_NAMES[cs.role] || '') : ''}`;
+  let text = `Champ select · ${c.name}${cs.role ? ' · ' + (ROLE_NAMES[cs.role] || '') : ''}${cs.vs ? ` vs ${champName(cs.vs)}` : ''}`;
   const li = st.lastImport;
   if (li && li.championId === cs.championId) text += ' — ' + importText(li);
   else if (!cs.locked) text += ' — lock in to import runes and items';

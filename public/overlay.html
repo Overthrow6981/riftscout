@@ -35,6 +35,12 @@
     .it.own::after { content: "✓"; position: absolute; inset: 0; display: grid; place-items: center; color: #4ade80; font-weight: 700; font-size: 15px; }
     .it.next { border: 2px solid #e8b64c; }
     .sm { color: #8b92a5; font-size: 11px; margin-top: 5px; }
+    .vs { display: flex; align-items: center; gap: 5px; margin-top: 6px; color: #b5bac8; font-size: 11px; flex-wrap: wrap; }
+    .vs span, .vs b { white-space: nowrap; }
+    .vs img { width: 18px; height: 18px; border-radius: 4px; }
+    .vs b { color: #fff; }
+    .vs .good { color: #4ade80; }
+    .vs .bad { color: #ff8a8e; }
   </style>
 </head>
 <body>
@@ -62,6 +68,9 @@
           <div class="nm">${esc(d.champion ? d.champion.name : 'RiftScout')} <small>${esc(ROLE[d.role] || '')}</small></div>
           <div class="tm">${fmt(d.time)}</div>
         </div>
+        ${d.vs ? `<div class="vs"><span>vs</span><img src="${img('champion', d.vs.id)}" alt=""><b>${esc(d.vs.name)}</b>
+          ${d.vs.games >= 5 ? `<span class="${d.vs.wins / d.vs.games >= 0.5 ? 'good' : 'bad'}">${Math.round((d.vs.wins / d.vs.games) * 100)}% win</span><span>(${d.vs.games})</span>` : ''}
+          ${d.vs.specific ? '<span>· matchup build</span>' : ''}</div>` : ''}
         <div class="st">
           <span><b>${k}/${de}/${a}</b> KDA</span>
           <span><b>${d.csPerMin.toFixed(1)}</b> CS/min</span>
