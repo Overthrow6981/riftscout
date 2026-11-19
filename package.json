@@ -1,0 +1,57 @@
+{
+  "name": "riftscout",
+  "productName": "RiftScout",
+  "version": "0.2.0",
+  "description": "Simple League of Legends companion: profile, match history and live game view.",
+  "author": "Overthrow6981",
+  "license": "UNLICENSED",
+  "private": true,
+  "main": "main.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Overthrow6981/riftscout.git"
+  },
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js",
+    "dist": "electron-builder --win"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "electron-updater": "^6.3.9",
+    "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.overthrow6981.riftscout",
+    "productName": "RiftScout",
+    "files": [
+      "main.js",
+      "server.js",
+      "public/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "artifactName": "RiftScout-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "RiftScout"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Overthrow6981",
+        "repo": "riftscout",
+        "releaseType": "release"
+      }
+    ]
+  }
+}
