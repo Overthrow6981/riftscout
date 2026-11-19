@@ -118,6 +118,18 @@ async function riot(route, apiPath, attempt = 0) {
   return res.json();
 }
 
+// Die versamelaar gebruik net wat oor is: hou altyd 'n reserwe vir die speler se eie soektogte
+const USER_RESERVE = Number(process.env.USER_RESERVE) || 40;
+async function riotBackground(route, apiPath) {
+  for (;;) {
+    const now = Date.now();
+    const used = stamps.filter((t) => now - t < 120000).length;
+    if (used < WINDOWS[1].limit - USER_RESERVE) break;
+    await sleep(2000);
+  }
+  return riot(route, apiPath);
+}
+
 // Kort geheue-cache vir dinge wat verander (profiel, rank)
 const memCache = new Map();
 async function cached(key, ttlMs, fn) {
@@ -267,7 +279,7 @@ async function loadRemoteBuilds() {
   } catch { /* geen gedeelde data beskikbaar nie */ }
 }
 
-function buildFor(championId, role, strict) {
+function buildFor(championId, role, strict, vs) {
   const roles = db.rolesFor(championId);
   let use = role;
   if (!strict || !use) {
@@ -275,7 +287,41 @@ function buildFor(championId, role, strict) {
     use = wanted ? role : (roles[0] ? roles[0].role : role);
   }
   const { stats, patches } = db.statsFor(championId, use);
-  return { championId, role: use || '', roles, patches, minGames: MIN_GAMES, rec: use ? builds.recommend(stats) : null };
+  const all = use ? builds.matchups(stats, 1) : [];
+  const solid = all.filter((m) => m.games >= 5);
+  return {
+    championId, role: use || '', roles, patches, minGames: MIN_GAMES, matchupMin: builds.MATCHUP_MIN,
+    rec: use ? builds.recommend(stats, vs || null) : null,
+    opponents: all.sort((a, b) => b.games - a.games).map(({ championId: id, games }) => ({ championId: id, games })),
+    strongAgainst: solid.filter((m) => m.wr >= 0.5).sort((a, b) => b.wr - a.wr || b.games - a.games).slice(0, 6),
+    weakAgainst: solid.filter((m) => m.wr < 0.5).sort((a, b) => a.wr - b.wr || b.games - a.games).slice(0, 6),
+  };
+}
+
+// Counter-picks teen 'n vyand in 'n rol
+function countersFor(enemyId, role) {
+  const roles = db.rolesFor(enemyId);
+  const use = role || (roles[0] ? roles[0].role : '');
+  if (!use) return { enemyId, role: '', counters: [] };
+  return { enemyId, role: use, counters: builds.counterPicks(db.statsFor(enemyId, use).stats) };
+}
+
+// Raai die vyand se rolle en kies die een in my lane
+function enemyLaner(enemyIds, myRole) {
+  if (!myRole || !enemyIds.length) return null;
+  const roleGames = enemyIds.map((id) => ({
+    championId: id,
+    roles: Object.fromEntries(db.rolesFor(id).map((r) => [r.role, r.games])),
+  }));
+  const assign = builds.guessRoles(roleGames);
+  const hit = Object.entries(assign).find(([, r]) => r === myRole);
+  // Net seker genoeg as al 5 bekend is, of as die champion hoofsaaklik daardie rol speel
+  if (!hit) return null;
+  const id = Number(hit[0]);
+  const rg = roleGames.find((x) => x.championId === id).roles;
+  const total = Object.values(rg).reduce((a, b) => a + b, 0);
+  const share = total ? (rg[myRole] || 0) / total : 0;
+  return enemyIds.length >= 5 || share >= 0.6 ? id : null;
 }
 
 const ROLE_NAMES = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'ADC', UTILITY: 'Support' };
@@ -307,9 +353,9 @@ function orderSpells(ids, cs) {
   return [a, b];
 }
 
-async function doImport(championId, role, what, cs) {
+async function doImport(championId, role, what, cs, vs) {
   await getDDragon().catch(() => {});
-  const b = buildFor(championId, role, false);
+  const b = buildFor(championId, role, false, vs);
   const rec = b.rec;
   const champ = (DD && DD.champions[championId]) || { name: 'Champion' };
   if (!rec || rec.games < MIN_GAMES) {
@@ -318,9 +364,14 @@ async function doImport(championId, role, what, cs) {
   const results = {};
   const replace = getPrefs().replaceRunePage;
   if (what.has('runes') && rec.runes[0]) results.runes = await lcu.importRunes(rec.runes[0].page, `RiftScout ${champ.name}`, replace);
-  if (what.has('items')) results.items = await lcu.importItemSet(championId, `RiftScout ${champ.name} ${ROLE_NAMES[b.role] || ''}`.trim(), itemBlocks(rec));
+  const vsName = rec.vs && DD && DD.champions[rec.vs.championId] ? DD.champions[rec.vs.championId].name : '';
+  const setTitle = `RiftScout ${champ.name} ${ROLE_NAMES[b.role] || ''}${vsName && rec.fromMatchup.length ? ` vs ${vsName}` : ''}`.trim();
+  if (what.has('items')) results.items = await lcu.importItemSet(championId, setTitle, itemBlocks(rec));
   if (what.has('spells') && rec.spells[0]) results.spells = await lcu.setSpells(...orderSpells(rec.spells[0].ids, cs));
-  return { ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: b.role, results, at: Date.now() };
+  return {
+    ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: b.role,
+    vs: vs || null, vsName, matchupSpecific: rec.fromMatchup.length > 0, results, at: Date.now(),
+  };
 }
 
 // ---------- League-kliënt: champ select dophou en outomaties invoer ----------
@@ -332,13 +383,16 @@ async function lcuTick() {
   if (lcuBusy) return;
   lcuBusy = true;
   try {
-    lcuState = await lcu.state();
+    const st = await lcu.state();
+    if (st.champSelect) st.champSelect.vs = enemyLaner(st.champSelect.enemies || [], st.champSelect.role);
+    lcuState = st;
     if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; return; }
     const cs = lcuState.champSelect;
     if (!cs || !cs.championId || !cs.locked || !getPrefs().autoImport) return;
-    const key = `${cs.championId}:${cs.role}`;
+    // Sleutel sluit die teenstander in: as die vyand later kies, word die matchup-build ingevoer
+    const key = `${cs.championId}:${cs.role}:${cs.vs || ''}`;
     if (key === lastAutoKey) return;
-    const result = await doImport(cs.championId, cs.role, new Set(['runes', 'items']), cs);
+    const result = await doImport(cs.championId, cs.role, new Set(['runes', 'items']), cs, cs.vs);
     lastImport = { ...result, auto: true };
     if (!result.retry) lastAutoKey = key; // nog te min data: probeer weer sodra daar meer is
   } catch { /* volgende keer weer */ } finally {
@@ -375,7 +429,15 @@ async function overlayData() {
   let champion = null;
   if (dd) for (const [key, c] of Object.entries(dd.champions)) if (c.id === ddId) { championId = Number(key); champion = c; }
   const role = me ? LIVE_POSITIONS[me.position] || '' : '';
-  const b = championId ? buildFor(championId, role, false) : null;
+  const champKey = (p) => {
+    const r = String((p && p.rawChampionName) || '');
+    const idStr = r.startsWith('game_character_displayname_') ? r.slice(27) : '';
+    if (dd) for (const [key, c] of Object.entries(dd.champions)) if (c.id === idStr) return Number(key);
+    return 0;
+  };
+  const opp = me && role ? (d.allPlayers || []).find((p) => p.team !== me.team && LIVE_POSITIONS[p.position] === role) : null;
+  const vsId = opp ? champKey(opp) : 0;
+  const b = championId ? buildFor(championId, role, false, vsId || null) : null;
   const rec = b && b.rec && b.rec.games >= MIN_GAMES ? b.rec : null;
   const owned = me ? (me.items || []).map((it) => it.itemID) : [];
   const pathIds = rec ? builds.buildPath(rec) : [];
@@ -399,6 +461,13 @@ async function overlayData() {
     nextSkill: nextSkill(rec, ap.abilities, ap.level || 1),
     maxOrder: rec && rec.maxOrder[0] ? rec.maxOrder[0].key : null,
     games: rec ? rec.games : 0,
+    vs: vsId && dd && dd.champions[vsId] ? {
+      id: dd.champions[vsId].id,
+      name: dd.champions[vsId].name,
+      games: rec && rec.vs ? rec.vs.games : 0,
+      wins: rec && rec.vs ? rec.vs.wins : 0,
+      specific: !!(rec && rec.fromMatchup.length),
+    } : null,
   };
 }
 
@@ -539,7 +608,15 @@ app.get('/api/builds/champion/:id', wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) throw httpError(400, 'Invalid champion.');
   const role = String(req.query.role || '').toUpperCase();
-  res.json(buildFor(id, builds.ROLES.includes(role) ? role : '', req.query.strict === '1'));
+  const vs = Number(req.query.vs) || null;
+  res.json(buildFor(id, builds.ROLES.includes(role) ? role : '', req.query.strict === '1', vs));
+}));
+
+app.get('/api/builds/counters/:id', wrap(async (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id) || id <= 0) throw httpError(400, 'Invalid champion.');
+  const role = String(req.query.role || '').toUpperCase();
+  res.json(countersFor(id, builds.ROLES.includes(role) ? role : ''));
 }));
 
 app.get('/api/lcu/state', (req, res) => res.json({ ...lcuState, lastImport }));
@@ -549,7 +626,8 @@ app.post('/api/lcu/import', wrap(async (req, res) => {
   if (!Number.isInteger(championId) || championId <= 0) throw httpError(400, 'Invalid champion.');
   const what = new Set((req.body.what || []).filter((w) => ['runes', 'items', 'spells'].includes(w)));
   const role = builds.ROLES.includes(req.body.role) ? req.body.role : '';
-  lastImport = await doImport(championId, role, what, lcuState.champSelect);
+  const vs = Number(req.body.vs) || null;
+  lastImport = await doImport(championId, role, what, lcuState.champSelect, vs);
   res.json(lastImport);
 }));
 
@@ -567,7 +645,7 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
     db = new builds.BuildDB(path.join(DATA_DIR, 'builds', 'builds.json'));
     seen = new builds.SeenSet(path.join(DATA_DIR, 'builds', 'seen.json'));
     crawler = new builds.Crawler({
-      riot, db, seen,
+      riot: riotBackground, db, seen,
       getRegion: crawlRegion,
       getClassifier: () => itemCls,
       hasKey: () => !!API_KEY,

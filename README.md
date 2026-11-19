@@ -3,8 +3,9 @@
 A League of Legends companion app for Windows – like Blitz, but simple:
 
 - **Builds & runes** for every champion and role, calculated from Challenger, Grandmaster and Master ranked games: rune page, summoner spells, skill order, starting items, boots, core build and 4th–6th item options, with win and pick rates.
-- **Champ select auto-import:** lock in a champion and RiftScout puts the rune page and an item set straight into your League client (spells with one click).
-- **In-game overlay:** next item to buy, "Level up" reminder, KDA, CS/min and gold on top of the game (Borderless or Windowed mode; Ctrl+Shift+O hides it).
+- **Matchups:** builds, runes, spells and skill order *against your lane opponent*, matchup win rates, "strong against" / "weak against" lists and counter picks.
+- **Champ select auto-import:** lock in a champion and RiftScout detects your lane opponent and puts the matchup rune page and item set straight into your League client (spells with one click). If the enemy picks after you, the matchup build is imported automatically.
+- **In-game overlay:** your lane opponent and matchup win rate, next item to buy, "Level up" reminder, KDA, CS/min and gold on top of the game (Borderless or Windowed mode; Ctrl+Shift+O hides it).
 - **Profiles & match history:** rank, LP, mastery and recent games for any Riot ID.
 - **Live game view** of both teams.
 

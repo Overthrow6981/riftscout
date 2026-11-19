@@ -9,6 +9,11 @@ const path = require('path');
 const ROLES = ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY'];
 const SLOT = { 1: 'Q', 2: 'W', 3: 'E', 4: 'R' };
 const MAP_KEYS = ['runes', 'spells', 'start', 'core', 'boots', 'items', 'item4', 'item5', 'item6', 'maxOrder', 'skills'];
+// Per lane-teenstander hou ons 'n kleiner stel by (genoeg vir 'n matchup-build)
+const VS_KEYS = ['runes', 'spells', 'start', 'core', 'boots', 'items', 'maxOrder'];
+const VS_MAP_LIMIT = 15;
+const MATCHUP_MIN = 8;   // minimum wedstryde teen 'n champion voor ons 'n matchup-build gee
+const SECTION_MIN = 3;   // minimum wedstryde vir 'n spesifieke keuse binne 'n matchup
 const MAX_AGE_MS = 21 * 24 * 3600 * 1000; // net wedstryde van die laaste 3 weke
 const KEEP_PATCHES = 3;
 const MAP_LIMIT = 60;
@@ -123,9 +128,11 @@ function analyzeMatch(match, timeline, cls) {
     }
   }
   const rows = [];
-  for (const p of info.participants || []) {
+  const parts = info.participants || [];
+  for (const p of parts) {
     const role = p.teamPosition;
     if (!ROLES.includes(role) || !p.championId) continue;
+    const opp = parts.find((q) => q.teamId !== p.teamId && q.teamPosition === role);
     const buys = purchases[p.participantId] || [];
     const start = buys.filter((b) => b.t < 70000).map((b) => b.id).sort((a, b) => a - b);
     const completed = [];
@@ -135,6 +142,7 @@ function analyzeMatch(match, timeline, cls) {
     rows.push({
       championId: p.championId,
       role,
+      vs: opp && opp.championId ? opp.championId : null,
       win: !!p.win,
       runes: runeKey(p.perks),
       spells: [p.summoner1Id, p.summoner2Id].sort((a, b) => a - b).join(','),
@@ -150,8 +158,13 @@ function analyzeMatch(match, timeline, cls) {
 
 // ---------- Databasis ----------
 function emptyRole() {
-  const r = { games: 0, wins: 0 };
+  const r = { games: 0, wins: 0, vs: {} };
   for (const k of MAP_KEYS) r[k] = {};
+  return r;
+}
+function emptyMatchup() {
+  const r = { games: 0, wins: 0 };
+  for (const k of VS_KEYS) r[k] = {};
   return r;
 }
 
@@ -166,13 +179,19 @@ function mergeRole(target, src) {
   target.games += src.games || 0;
   target.wins += src.wins || 0;
   for (const k of MAP_KEYS) for (const [key, [n, w]] of Object.entries(src[k] || {})) bump(target[k], key, false, n, w);
+  for (const [opp, m] of Object.entries(src.vs || {})) {
+    const t = target.vs[opp] || (target.vs[opp] = emptyMatchup());
+    t.games += m.games || 0;
+    t.wins += m.wins || 0;
+    for (const k of VS_KEYS) for (const [key, [n, w]] of Object.entries(m[k] || {})) bump(t[k], key, false, n, w);
+  }
 }
 
-function prune(map) {
+function prune(map, limit = MAP_LIMIT) {
   const keys = Object.keys(map);
-  if (keys.length <= MAP_LIMIT * 2) return map;
+  if (keys.length <= limit * 2) return map;
   const out = {};
-  for (const [k, v] of Object.entries(map).sort((a, b) => b[1][0] - a[1][0]).slice(0, MAP_LIMIT)) out[k] = v;
+  for (const [k, v] of Object.entries(map).sort((a, b) => b[1][0] - a[1][0]).slice(0, limit)) out[k] = v;
   return out;
 }
 
@@ -206,6 +225,19 @@ class BuildDB {
       if (r.completed.length >= 3) bump(s.core, r.completed.slice(0, 3).join('-'), r.win);
       r.completed.forEach((id) => bump(s.items, id, r.win));
       ['item4', 'item5', 'item6'].forEach((k, i) => bump(s[k], r.completed[3 + i], r.win));
+      if (r.vs) {
+        if (!s.vs) s.vs = {};
+        const m = s.vs[r.vs] || (s.vs[r.vs] = emptyMatchup());
+        m.games++;
+        if (r.win) m.wins++;
+        bump(m.runes, r.runes, r.win);
+        bump(m.spells, r.spells, r.win);
+        bump(m.start, r.start, r.win);
+        bump(m.boots, r.boots, r.win);
+        bump(m.maxOrder, r.maxOrder, r.win);
+        if (r.completed.length >= 3) bump(m.core, r.completed.slice(0, 3).join('-'), r.win);
+        r.completed.forEach((id) => bump(m.items, id, r.win));
+      }
     }
     this.dirty++;
   }
@@ -247,7 +279,12 @@ class BuildDB {
     const patches = Object.keys(this.data.patches).sort(comparePatch).reverse();
     for (const p of patches.slice(KEEP_PATCHES)) delete this.data.patches[p];
     for (const P of Object.values(this.data.patches)) {
-      for (const C of Object.values(P.champs)) for (const s of Object.values(C)) for (const k of MAP_KEYS) s[k] = prune(s[k]);
+      for (const C of Object.values(P.champs)) {
+        for (const s of Object.values(C)) {
+          for (const k of MAP_KEYS) s[k] = prune(s[k]);
+          for (const m of Object.values(s.vs || {})) for (const k of VS_KEYS) m[k] = prune(m[k], VS_MAP_LIMIT);
+        }
+      }
     }
     this.data.updated = Date.now();
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
@@ -285,8 +322,8 @@ function top(map, k = 3) {
 }
 const nums = (key, sep = ',') => key.split(sep).map(Number);
 
-function recommend(s) {
-  return {
+function recommend(s, vsId) {
+  const rec = {
     games: s.games,
     wins: s.wins,
     runes: top(s.runes, 3).map((e) => ({ ...e, page: parseRuneKey(e.key) })),
@@ -300,7 +337,69 @@ function recommend(s) {
     items: top(s.items, 10).map((e) => ({ ...e, id: Number(e.key) })),
     maxOrder: top(s.maxOrder, 2),
     skills: top(s.skills, 1),
+    vs: null,
+    fromMatchup: [],
   };
+  // Matchup-build: gebruik die keuses teen hierdie spesifieke teenstander waar daar genoeg data is
+  const m = vsId && s.vs ? s.vs[vsId] : null;
+  if (m) {
+    rec.vs = { championId: Number(vsId), games: m.games, wins: m.wins };
+    if (m.games >= MATCHUP_MIN) {
+      const use = (key, list) => {
+        if (list.length && list[0].n >= SECTION_MIN) { rec[key] = list; rec.fromMatchup.push(key); }
+      };
+      use('runes', top(m.runes, 3).map((e) => ({ ...e, page: parseRuneKey(e.key) })));
+      use('spells', top(m.spells, 2).map((e) => ({ ...e, ids: nums(e.key) })));
+      use('start', top(m.start, 2).map((e) => ({ ...e, ids: nums(e.key) })));
+      use('boots', top(m.boots, 3).map((e) => ({ ...e, id: Number(e.key) })));
+      use('core', top(m.core, 3).map((e) => ({ ...e, ids: nums(e.key, '-') })));
+      use('items', top(m.items, 10).map((e) => ({ ...e, id: Number(e.key) })));
+      use('maxOrder', top(m.maxOrder, 2));
+    }
+  }
+  return rec;
+}
+
+// Hoe goed doen hierdie champion teen elke lane-teenstander
+function matchups(s, minGames = 5) {
+  return Object.entries(s.vs || {})
+    .filter(([, m]) => m.games >= minGames)
+    .map(([id, m]) => ({ championId: Number(id), games: m.games, wins: m.wins, wr: m.wins / m.games }));
+}
+
+// Watter champions wen die meeste teen 'n vyand in 'n rol (counter-picks)
+function counterPicks(enemyStats, minGames = 5, k = 8) {
+  return matchups(enemyStats, minGames)
+    .map((x) => ({ championId: x.championId, games: x.games, wins: x.games - x.wins, wr: 1 - x.wr }))
+    .sort((a, b) => b.wr - a.wr || b.games - a.games)
+    .slice(0, k);
+}
+
+// Raai elke vyand se rol uit hoe gereeld die champion elke rol speel (beste algehele toewysing)
+function guessRoles(roleGames) { // roleGames: [{ championId, roles: { TOP: n, ... } }]
+  const champs = roleGames.slice(0, 5);
+  let best = null;
+  const used = new Set();
+  const assign = {};
+  const prob = (c, role) => {
+    const total = Object.values(c.roles).reduce((a, b) => a + b, 0);
+    return total ? (c.roles[role] || 0) / total : 0.2;
+  };
+  (function search(i, score) {
+    if (i === champs.length) {
+      if (!best || score > best.score) best = { score, assign: { ...assign } };
+      return;
+    }
+    for (const role of ROLES) {
+      if (used.has(role)) continue;
+      used.add(role);
+      assign[champs[i].championId] = role;
+      search(i + 1, score + Math.log(prob(champs[i], role) + 0.001));
+      used.delete(role);
+      delete assign[champs[i].championId];
+    }
+  })(0, 0);
+  return best ? best.assign : {};
 }
 
 // Volle bou-volgorde vir die oorleg en die item set: kern-items met stewels na die eerste item
@@ -423,4 +522,5 @@ class Crawler {
 module.exports = {
   ROLES, PLATFORM_ROUTE, itemsFromDDragon, itemClassifier, analyzeMatch, patchOf, comparePatch,
   runeKey, parseRuneKey, maxOrder, BuildDB, SeenSet, Crawler, recommend, buildPath,
+  matchups, counterPicks, guessRoles, MATCHUP_MIN,
 };

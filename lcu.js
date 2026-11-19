@@ -99,6 +99,8 @@ async function state() {
           role: POSITIONS[me.assignedPosition] || '',
           spell1Id: me.spell1Id || 0,
           spell2Id: me.spell2Id || 0,
+          // Vyande se champions (sigbaar sodra hulle gekies is)
+          enemies: (s.data.theirTeam || []).map((x) => x.championId).filter((id) => id > 0),
         };
       }
     }
