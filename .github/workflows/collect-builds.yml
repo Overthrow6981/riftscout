@@ -1,0 +1,64 @@
+# Versamel elke 4 uur high-elo wedstryde en publiseer die build-statistieke as builds.json
+# in die "build-data" release. Elke RiftScout-app laai dit af, sodat almal dadelik builds het.
+#
+# Nodig: 'n repo-secret RIOT_API_KEY (Settings > Secrets and variables > Actions).
+# 'n Development key verval elke 24 uur; 'n Personal API key van developer.riotgames.com verval nie.
+
+name: Collect build data
+
+on:
+  schedule:
+    - cron: '23 */4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-builds
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 230
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Check for Riot API key
+        id: key
+        env:
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
+        run: |
+          if [ -z "$RIOT_API_KEY" ]; then
+            echo "No RIOT_API_KEY secret set - skipping. Add it under Settings > Secrets and variables > Actions."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download previous data
+        if: steps.key.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download build-data -p 'builds*.json' --clobber || echo "No previous data yet."
+
+      - name: Collect matches
+        if: steps.key.outputs.ok == 'true'
+        env:
+          RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
+        run: node tools/collect.js --region na1 --minutes 200 --file builds.json --seen builds-seen.json
+
+      - name: Publish data
+        if: steps.key.outputs.ok == 'true' && always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f builds.json ] || exit 0
+          gh release view build-data > /dev/null 2>&1 || gh release create build-data --prerelease --latest=false \
+            --title "Build data" --notes "Build statistics collected automatically from high-elo ranked games. Used by the RiftScout app - not an app release."
+          gh release upload build-data builds.json builds-seen.json --clobber
