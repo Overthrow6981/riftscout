@@ -360,13 +360,58 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .ep img { width: 26px; height: 26px; border-radius: 50%; }
 .ep small { color: var(--muted); margin-left: 5px; }
 .ep.lane { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+button.ep { font: inherit; color: inherit; cursor: pointer; width: auto; }
+button.ep:hover { border-color: var(--muted); }
+.ep-hint { margin-top: 6px; font-size: 12px; }
+.ep-hint a { color: var(--gold); }
 ol.counters { list-style: none; margin: 0; padding: 0; counter-reset: c; display: grid; gap: 4px; }
-ol.counters li { counter-increment: c; display: grid; grid-template-columns: 22px 30px minmax(90px, 160px) 1fr 52px 80px; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--panel2); cursor: pointer; }
+ol.counters li, .ct-head { display: grid; grid-template-columns: 22px 30px minmax(90px, 1fr) minmax(110px, 170px) minmax(110px, 170px) 60px; align-items: center; gap: 10px; }
+ol.counters li { counter-increment: c; padding: 6px 8px; border-radius: 8px; background: var(--panel2); cursor: pointer; }
+ol.counters li.taken { opacity: .45; }
+ol.counters li .cn small { color: var(--muted); font-weight: 500; margin-left: 4px; }
+.ct-head { padding: 0 8px 4px; font-size: 11px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+.ct-sort { background: none; border: 0; padding: 0; color: var(--muted); font: inherit; text-transform: inherit; letter-spacing: inherit; text-align: left; cursor: pointer; width: auto; }
+.ct-sort:hover { color: var(--text); }
+.ct-sort.on { color: var(--gold); }
+.ct-sort.on::after { content: ' ▾'; }
+ol.counters .cval { display: flex; align-items: center; gap: 8px; }
+ol.counters .cval .cbar { flex: 1; max-width: 90px; }
+ol.counters .cval b { min-width: 36px; }
 ol.counters li:hover { background: var(--line); }
 ol.counters li::before { content: counter(c); color: var(--muted); font-weight: 700; text-align: right; }
 ol.counters img { width: 30px; height: 30px; border-radius: 6px; }
 ol.counters .cn { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 ol.counters .cbar { height: 6px; border-radius: 99px; background: rgba(255,255,255,.08); overflow: hidden; }
 ol.counters .cbar span { display: block; height: 100%; background: #4ade80; }
+ol.counters .cbar span.bad { background: #f87171; }
 ol.counters b.good { color: #4ade80; }
 ol.counters b.bad { color: #f87171; }
+
+/* Volle rune-bladsy (alle opsies, gekose eenes helder) */
+.rtree { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; padding: 6px 0 4px; }
+.rcol { display: flex; flex-direction: column; gap: 8px; align-items: center; background: var(--panel2); border-radius: 10px; padding: 10px 6px; }
+.rhead { display: flex; align-items: center; gap: 6px; font-size: 13px; align-self: flex-start; padding-left: 6px; }
+.rhead img.style { width: 22px; height: 22px; }
+.rrow { display: flex; justify-content: center; gap: 8px; }
+.rn { width: 32px; height: 32px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: var(--bg); }
+.rn img { width: 100%; height: 100%; border-radius: 50%; filter: grayscale(1); opacity: .3; }
+.rn.on { box-shadow: 0 0 0 2px var(--gold); }
+.rn.on img { filter: none; opacity: 1; }
+.rn.ks { width: 44px; height: 44px; }
+.rn.ks:not(.on) img { width: 80%; height: 80%; }
+.rn.ks.on { box-shadow: 0 0 0 2px var(--gold), 0 0 10px rgba(232,182,76,.45); }
+ol.counters .few { color: var(--muted); opacity: .7; }
+.rrow.sh { gap: 10px; }
+.rrow.sh .rn { width: 24px; height: 24px; }
+.rrow.sh .rn img { width: 80%; height: 80%; }
+.rrow.sh .rn.on { box-shadow: 0 0 0 2px var(--gold); background: #2a2410; }
+.shard-t { font-size: 8px; font-weight: 700; color: var(--muted); }
+.rn.on .shard-t { color: var(--gold); }
+.rsep { width: 70%; border-top: 1px solid var(--line); margin: 2px 0; }
+.rnames { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+.rnames b { color: var(--text); }
+@media (max-width: 700px) { .rtree { grid-template-columns: 1fr; } }
+.cs-more { margin-top: 10px; }
+.cs-more summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; padding: 4px 0 8px; }
+.cs-more summary small { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.cs-more[open] summary { color: var(--text); }

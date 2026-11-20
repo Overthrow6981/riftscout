@@ -518,6 +518,7 @@ let lcuConnected = false;
 const itemName = (id) => (dd.items && dd.items[id] ? dd.items[id].name : `Item ${id}`);
 const itemIcon = (id, cls = '') => `<div class="bi ${cls}" title="${esc(itemName(id))}"><img src="${itemImg(id)}" alt="" loading="lazy"></div>`;
 const wr = (e) => (e && e.n ? pct(e.w / e.n) : '–');
+const laneTxt = (l, suffix) => (l && l[0] ? ` · ${pct(l[1] / l[0])}${suffix}` : '');
 
 function champList() {
   return Object.entries(dd.champions || {}).map(([key, c]) => ({ key: Number(key), ...c })).sort((a, b) => a.name.localeCompare(b.name));
@@ -557,6 +558,49 @@ async function openBuild(champKey, role, strict, vs) {
 function runeImgTag(id, cls = '') {
   return dd.runes[id] ? `<img class="${cls}" src="${runeImg(id)}" alt="" title="${esc(dd.runes[id].name)}">` : '';
 }
+// Volle rune-bladsy soos in die kliënt (en Blitz): alle opsies, die gekose eenes helder
+const SHARD_ROWS = [[5008, 5005, 5007], [5008, 5010, 5001], [5011, 5013, 5001]];
+const SHARD_ICON = {
+  5008: 'statmodsadaptiveforceicon', 5005: 'statmodsattackspeedicon', 5007: 'statmodscdrscalingicon',
+  5010: 'statmodsmovementspeedicon', 5001: 'statmodshealthplusicon', 5011: 'statmodshealthscalingicon',
+  5013: 'statmodstenacityicon', 5002: 'statmodsarmoricon', 5003: 'statmodsmagicresicon',
+};
+const SHARD_SHORT = { 5008: 'AF', 5005: 'AS', 5007: 'AH', 5010: 'MS', 5001: 'HP+', 5011: 'HP', 5013: 'TEN', 5002: 'AR', 5003: 'MR' };
+const shardImg = (id) => `https://raw.communitydragon.org/latest/plugins/rcp-be-lol-game-data/global/default/v1/perk-images/statmods/${SHARD_ICON[id] || ''}.png`;
+// As 'n shard-ikoon nie laai nie: wys 'n kort teks (AF, AS, HP …)
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (!img || !img.classList || !img.classList.contains('shard-i')) return;
+  const t = document.createElement('span');
+  t.className = 'shard-t';
+  t.textContent = img.dataset.short || '?';
+  img.replaceWith(t);
+}, true);
+
+function runeTreeHtml(p, statsHtml) {
+  const tree = (id) => (dd.trees || []).find((t) => t.id === id);
+  const pt = tree(p.primaryStyleId);
+  const st = tree(p.subStyleId);
+  if (!pt || !st) return runePageHtml({ page: p }, 0, true, true) + (statsHtml ? `<div class="rp-stats">${statsHtml}</div>` : '');
+  const sel = new Set([...p.primary, ...p.secondary]);
+  const nm = (id) => (dd.runes[id] ? dd.runes[id].name : '');
+  const icon = (id, ks) => `<span class="rn ${sel.has(id) ? 'on' : ''} ${ks ? 'ks' : ''}" title="${esc(nm(id))}"><img src="${runeImg(id)}" alt=""></span>`;
+  const rows = (t, from) => t.slots.slice(from).map((ids, i) =>
+    `<div class="rrow">${ids.map((id) => icon(id, from === 0 && i === 0)).join('')}</div>`).join('');
+  const shards = SHARD_ROWS.map((row, i) => {
+    const pick = p.shards[i];
+    const ids = row.includes(pick) || !pick ? row : [...row, pick];
+    return `<div class="rrow sh">${ids.map((id) => `<span class="rn ${id === pick ? 'on' : ''}" title="${esc(SHARDS[id] || '')}">
+      <img class="shard-i" data-short="${SHARD_SHORT[id] || '?'}" src="${shardImg(id)}" alt=""></span>`).join('')}</div>`;
+  }).join('');
+  return `<div class="rtree">
+      <div class="rcol"><div class="rhead">${runeImgTag(pt.id, 'style')}<b>${esc(pt.name)}</b></div>${rows(pt, 0)}</div>
+      <div class="rcol"><div class="rhead">${runeImgTag(st.id, 'style')}<b>${esc(st.name)}</b></div>${rows(st, 1)}<div class="rsep"></div>${shards}</div>
+    </div>
+    <div class="rnames"><b>${esc(nm(p.primary[0]))}</b> · ${[...p.primary.slice(1), ...p.secondary].map((id) => esc(nm(id))).join(' · ')}</div>
+    ${statsHtml ? `<div class="rp-stats">${statsHtml}</div>` : ''}`;
+}
+
 function runePageHtml(e, games, main, noStats) {
   const p = e.page;
   const rn = (id) => (dd.runes[id] ? esc(dd.runes[id].name) : `#${id}`);
@@ -590,14 +634,14 @@ function renderBuild() {
       <img class="bh-icon" src="${champImg(c.id)}" alt="">
       <div class="bh-main">
         <div class="bh-name">${esc(c.name)} <span>${esc(ROLE_NAMES[b.role] || '')}</span></div>
-        <div class="sub">${enough ? `${r.games} games · ${pct(r.wins / r.games)} win rate · patch ${esc(b.patches.join(' + '))}` : riot ? "Riot's recommended setup from the League client" : 'No RiftScout stats for this champion yet'}</div>
+        <div class="sub">${enough ? `${r.games} games · ${pct(r.wins / r.games)} win rate${laneTxt(r.lane, ' lane')} · patch ${esc(b.patches.join(' + '))}` : riot ? "Riot's recommended setup from the League client" : 'No RiftScout stats for this champion yet'}</div>
         <div class="roles">${roles}</div>
         ${b.opponents.length ? `<div class="vs-pick">vs <select id="vsSelect">
           <option value="">any opponent</option>
           ${b.opponents.map((o) => `<option value="${o.championId}" ${r && r.vs && r.vs.championId === o.championId ? 'selected' : ''}>${esc(champName(o.championId))} (${o.games})</option>`).join('')}
         </select></div>` : ''}
         ${r && r.vs ? `<div class="vs-line"><img src="${champIcon(r.vs.championId)}" alt="">
-          ${r.vs.games >= 5 ? `<b class="${r.vs.wins / r.vs.games >= 0.5 ? 'good' : 'bad'}">${pct(r.vs.wins / r.vs.games)}</b> win vs ${esc(champName(r.vs.championId))} · ${r.vs.games} games` : `Few games vs ${esc(champName(r.vs.championId))} yet (${r.vs.games})`}
+          ${r.vs.games >= 3 ? `<b class="${r.vs.wins / r.vs.games >= 0.5 ? 'good' : 'bad'}">${pct(r.vs.wins / r.vs.games)}</b> game${r.vs.lane && r.vs.lane[0] ? ` · <b class="${r.vs.lane[1] / r.vs.lane[0] >= 0.5 ? 'good' : 'bad'}">${pct(r.vs.lane[1] / r.vs.lane[0])}</b> lane` : ''} vs ${esc(champName(r.vs.championId))} · ${r.vs.games} games` : `Few games vs ${esc(champName(r.vs.championId))} yet (${r.vs.games})`}
           ${r.fromMatchup.length ? ' · <span class="mtag">matchup build</span>' : ` · general build (matchup build from ${b.matchupMin} games)`}</div>` : ''}
       </div>
       <div class="bh-actions" title="${esc(tip)}">
@@ -610,7 +654,7 @@ function renderBuild() {
     $('buildView').innerHTML = head + `<div class="notice">RiftScout's own win-rate stats for ${esc(c.name)} aren't in yet, so this is
       <b>Riot's recommended setup</b> straight from your League client – it imports instantly. Items: use the recommended items in the game's shop.</div>
       <div class="build-grid">
-        <div class="card"><h3>Runes <span class="mtag">Riot recommended</span></h3>${runePageHtml({ page: riot }, 0, true, true)}</div>
+        <div class="card"><h3>Runes <span class="mtag">Riot recommended</span></h3>${runeTreeHtml(riot)}</div>
         <div class="card"><h3>Summoner spells</h3>${riot.spells.length ? `<div class="spellrow">${riot.spells.map((sp) =>
           `<img src="${spellImg(sp)}" alt="" title="${esc(dd.spells[sp] ? dd.spells[sp].name : '')}">`).join('')}</div>` : '<div class="sub">—</div>'}</div>
       </div>`;
@@ -631,7 +675,10 @@ function renderBuild() {
 
   $('buildView').innerHTML = head + `
     <div class="build-grid">
-      <div class="card"><h3>Runes${tag('runes')}</h3>${r.runes[0] ? runePageHtml(r.runes[0], r.games, true) : '<div class="sub">No rune data.</div>'}
+      <div class="card"><h3>Runes${tag('runes')}</h3>${r.runes[0] ? runeTreeHtml(r.runes[0].page,
+          r.fromMatchup.includes('runes') && r.vs
+            ? `<b>${wr(r.runes[0])}</b> win rate · ${r.runes[0].n} games vs ${esc(champName(r.vs.championId))}`
+            : `<b>${wr(r.runes[0])}</b> win rate · ${pct(r.runes[0].n / r.games)} pick rate · ${r.runes[0].n} games`) : '<div class="sub">No rune data.</div>'}
         ${r.runes.slice(1).length ? `<details><summary>Other popular pages</summary>${r.runes.slice(1).map((e) => runePageHtml(e, r.games, false)).join('')}</details>` : ''}
       </div>
       <div>
@@ -736,34 +783,96 @@ async function loadCounters(enemyId, role) {
 }
 
 let csPanelHtml = '';
+let csSort = 'wr';
+let bestKey = '';
+let bestData = null;
+async function loadBest(role) {
+  if (role === bestKey) return bestData;
+  bestKey = role;
+  bestData = null;
+  try { bestData = await api(`/api/builds/best?role=${role}`); } catch { bestData = { best: [] }; }
+  return bestData;
+}
+
+// Tabel soos Blitz: champion, game-wenkoers, lane-wenkoers (voor in goud op 15 min) en hoeveel games
+function counterTable(list, cs, vsName) {
+  const taken = new Set([...(cs.enemies || []), ...(cs.bans || []),
+    ...(cs.allies || []).filter((a) => !a.me && a.championId).map((a) => a.championId)]);
+  const cls = (x) => (x >= 0.5 ? 'good' : 'bad');
+  const sorted = [...list].sort((a, b) => (csSort === 'lane'
+    ? ((b.laneScore ?? -1) - (a.laneScore ?? -1))
+    : (b.score - a.score)) || b.games - a.games);
+  const gameTip = vsName ? `How often this champion wins the game vs ${vsName}` : 'How often this champion wins the game';
+  const laneTip = vsName ? `How often this champion is ahead in gold at 15 minutes vs ${vsName}` : 'How often this champion is ahead of its lane opponent in gold at 15 minutes';
+  return `<div class="ct-head"><span></span><span></span><span>Champion</span>
+      <button type="button" class="ct-sort ${csSort === 'wr' ? 'on' : ''}" data-sort="wr" title="${esc(gameTip)}">Game %</button>
+      <button type="button" class="ct-sort ${csSort === 'lane' ? 'on' : ''}" data-sort="lane" title="${esc(laneTip)}">Lane %</button>
+      <span>Games</span></div>
+    <ol class="counters">${sorted.map((x) => `<li data-champ="${x.championId}" class="${taken.has(x.championId) ? 'taken' : ''}"
+        title="${taken.has(x.championId) ? 'Already picked or banned' : 'Click for runes and build'}">
+        <img src="${champIcon(x.championId)}" alt=""><span class="cn">${esc(champName(x.championId))}${taken.has(x.championId) ? ' <small>taken</small>' : ''}</span>
+        <span class="cval"><span class="cbar"><span class="${cls(x.wr)}" style="width:${Math.round(x.wr * 100)}%"></span></span><b class="${cls(x.wr)}">${pct(x.wr)}</b></span>
+        <span class="cval">${x.laneWr == null ? '<span class="sub">–</span>' : `<span class="cbar"><span class="${cls(x.laneWr)}" style="width:${Math.round(x.laneWr * 100)}%"></span></span><b class="${cls(x.laneWr)}">${pct(x.laneWr)}</b>`}</span>
+        <span class="sub ${x.games < 10 ? 'few' : ''}" ${x.games < 10 ? 'title="Few games – less reliable"' : ''}>${x.games.toLocaleString()}</span></li>`).join('')}</ol>`;
+}
+
 async function renderCsPanel(cs) {
   const panel = $('csPanel');
   if (!cs) { panel.classList.add('hidden'); csPanelHtml = ''; return; }
   const er = cs.enemyRoles || {};
-  const enemies = (cs.enemies || []).map((id) => `<span class="ep ${id === cs.vs ? 'lane' : ''}" title="${esc(champName(id))}">
-      <img src="${champIcon(id)}" alt=""><span>${esc(champName(id))}<small>${esc(ROLE_NAMES[er[id]] || '')}</small></span></span>`).join('');
+  const enemies = (cs.enemies || []).map((id) => `<button type="button" class="ep ${id === cs.vs ? 'lane' : ''}" data-ep="${id}"
+      title="${id === cs.vs ? `Your lane opponent${cs.vsManual ? ' (you picked this)' : ''}` : `Click if ${esc(champName(id))} is your lane opponent`}">
+      <img src="${champIcon(id)}" alt=""><span>${esc(champName(id))}<small>${esc(id === cs.vs && cs.role ? ROLE_NAMES[cs.role] : ROLE_NAMES[er[id]] || '')}</small></span></button>`).join('');
+  const roleName = esc(ROLE_NAMES[cs.role] || '');
+  const fixHint = cs.role && (cs.enemies || []).length ? `<div class="sub ep-hint">${cs.vs
+    ? `Wrong lane opponent? Click the right enemy above.${cs.vsManual ? ' <a href="#" data-ep-reset="1">Use RiftScout\'s guess</a>' : ''}`
+    : `Know who your ${roleName} opponent is? Click them above.`}</div>` : '';
   let body;
   if (!cs.role) {
     body = '<div class="sub">No lanes in this mode – counter picks are for Summoner\'s Rift draft and ranked.</div>';
   } else if (!cs.vs) {
-    body = `<div class="sub">Waiting for the enemy ${esc(ROLE_NAMES[cs.role] || '')} to pick…</div>`;
+    const b = await loadBest(cs.role);
+    const list = (b && b.best) || [];
+    body = `<div class="sub">Waiting for the enemy ${roleName} to pick – then you get the best picks against them.</div>` + (list.length
+      ? `<h3>Strongest ${roleName} picks right now</h3>${counterTable(list, cs, '')}` : '');
   } else {
+    const vsName = champName(cs.vs);
     const c = await loadCounters(cs.vs, cs.role);
     const list = (c && c.counters) || [];
-    body = `<h3>Best picks vs ${esc(champName(cs.vs))} <small>${esc(ROLE_NAMES[cs.role] || '')}</small></h3>` + (list.length
-      ? `<ol class="counters">${list.map((x) => `<li data-champ="${x.championId}">
-          <img src="${champIcon(x.championId)}" alt=""><span class="cn">${esc(champName(x.championId))}</span>
-          <span class="cbar"><span style="width:${Math.round(x.wr * 100)}%"></span></span>
-          <b class="${x.wr >= 0.5 ? 'good' : 'bad'}">${pct(x.wr)}</b><span class="sub">${x.games} games</span></li>`).join('')}</ol>
-          <div class="sub">Click a champion for its runes and build against ${esc(champName(cs.vs))}.</div>`
-      : `<div class="sub">No matchup win rates vs ${esc(champName(cs.vs))} yet – they come from RiftScout's shared match data.
-          Your runes still import from Riot's recommendations when you lock in.</div>`);
+    const best = (c && c.best) || [];
+    let inner = '';
+    if (list.length) {
+      inner += counterTable(list, cs, vsName) + `<div class="sub">Click a champion for its runes and build vs ${esc(vsName)}.
+        Game % = wins the game, Lane % = ahead in gold at 15 min. Sorted by win rate, weighted by number of games.</div>`;
+    }
+    if (best.length) {
+      inner += `<h3>${list.length ? 'More' : 'Strongest'} ${roleName} picks overall <small>not enough games vs ${esc(vsName)} for these yet</small></h3>${counterTable(best, cs, '')}`;
+    }
+    if (!list.length && !best.length) {
+      inner += `<div class="sub">No matchup win rates vs ${esc(vsName)} yet – they come from RiftScout's shared match data, which grows every few hours.
+        Your runes still import when you lock in.</div>`;
+    }
+    // Na lock-in: lys ingevou sodat jou runes en build bo-aan sigbaar is
+    body = cs.locked
+      ? `<details class="cs-more"><summary>Best ${roleName} picks vs ${esc(vsName)}${list.length ? ` <small>(${list.length})</small>` : ''}</summary>${inner}</details>`
+      : `<h3>Best ${roleName} picks vs ${esc(vsName)}</h3>${inner}`;
   }
-  const html = `<div class="ep-row"><span class="ep-label">Enemy picks</span>${enemies || '<span class="sub">none yet</span>'}</div>${body}`;
+  const html = `<div class="ep-row"><span class="ep-label">Enemy picks</span>${enemies || '<span class="sub">none yet</span>'}</div>${fixHint}${body}`;
   if (html !== csPanelHtml) { csPanelHtml = html; panel.innerHTML = html; }
   panel.classList.remove('hidden');
 }
-$('csPanel').addEventListener('click', (e) => {
+$('csPanel').addEventListener('click', async (e) => {
+  const ep = e.target.closest('[data-ep]');
+  const reset = e.target.closest('[data-ep-reset]');
+  if (ep || reset) {
+    e.preventDefault();
+    const id = reset ? 0 : Number(ep.dataset.ep);
+    try { await postJson('/api/lcu/vs', { championId: lastCs && lastCs.vsManual && lastCs.vs === id ? 0 : id }); } catch { /* volgende poll */ }
+    pollLcu();
+    return;
+  }
+  const sortBtn = e.target.closest('.ct-sort');
+  if (sortBtn) { csSort = sortBtn.dataset.sort; csPanelHtml = ''; if (lastCs) renderCsPanel(lastCs); return; }
   const li = e.target.closest('li[data-champ]');
   if (!li || !lastCs) return;
   openBuild(Number(li.dataset.champ), lastCs.role, false, lastCs.vs || null);
