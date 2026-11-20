@@ -10,6 +10,11 @@ on:
   schedule:
     - cron: '23 */4 * * *'
   workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'How many minutes to collect (the first run can be short so data arrives quickly)'
+        required: false
+        default: '200'
 
 permissions:
   contents: write
@@ -51,7 +56,7 @@ jobs:
         if: steps.key.outputs.ok == 'true'
         env:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
-        run: node tools/collect.js --region na1 --minutes 200 --file builds.json --seen builds-seen.json
+        run: node tools/collect.js --region na1 --minutes "${{ github.event.inputs.minutes || '200' }}" --file builds.json --seen builds-seen.json
 
       - name: Publish data
         if: steps.key.outputs.ok == 'true' && always()
