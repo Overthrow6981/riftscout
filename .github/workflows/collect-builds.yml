@@ -70,4 +70,5 @@ jobs:
           [ -f builds.json ] || exit 0
           gh release view build-data > /dev/null 2>&1 || gh release create build-data --prerelease --latest=false \
             --title "Build data" --notes "Build statistics collected automatically from high-elo ranked games. Used by the RiftScout app - not an app release."
-          gh release upload build-data builds.json builds-seen.json --clobber
+          gzip -9 -kf builds.json
+          gh release upload build-data builds.json builds.json.gz builds-seen.json --clobber
