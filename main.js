@@ -4,7 +4,8 @@
 
 const { app, BrowserWindow, shell, dialog, screen, globalShortcut } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const { startServer, getLiveData, getPrefs, saveBuildData } = require('./server');
+const { startServer, getLiveData, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy } = require('./server');
+const updates = require('./updater');
 
 const OVERLAY_W = 300;
 const OVERLAY_H = 300;
@@ -145,26 +146,13 @@ async function refreshOverlay() {
 // ---------- Opdaterings ----------
 function setupUpdates() {
   if (!app.isPackaged) return; // net in die geïnstalleerde app
-  autoUpdater.autoDownload = true;
-  autoUpdater.autoInstallOnAppQuit = true;
-
-  autoUpdater.on('update-downloaded', async (info) => {
-    const { response } = await dialog.showMessageBox(win, {
-      type: 'info',
-      buttons: ['Restart now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Update ready',
-      message: `RiftScout ${info.version} has been downloaded.`,
-      detail: 'Restart now to install it, or it will install the next time you close RiftScout.',
-    });
-    if (response === 0) { saveBuildData(); autoUpdater.quitAndInstall(); }
+  const u = updates.setupUpdates({
+    updater: autoUpdater,
+    isBusy,
+    onState: setUpdateState,
+    beforeInstall: saveBuildData,
   });
-  autoUpdater.on('error', (err) => console.error('Update error:', err && err.message));
-
-  const check = () => autoUpdater.checkForUpdates().catch(() => {});
-  check();
-  setInterval(check, 60 * 60 * 1000); // elke uur
+  onInstallRequest(() => u.install());
 }
 
 app.on('will-quit', () => {

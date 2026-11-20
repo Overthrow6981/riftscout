@@ -955,6 +955,12 @@ app.get('/api/matches', wrap(async (req, res) => {
 }));
 
 app.get('/api/live', wrap(async (req, res) => res.json(await getLiveData())));
+app.get('/api/update', (req, res) => res.json(updateState));
+app.post('/api/update/install', wrap(async (req, res) => {
+  requireJson(req);
+  if (!installHandler || updateState.state !== 'ready') throw httpError(409, 'No update is ready to install.');
+  res.json({ ok: !!installHandler() });
+}));
 app.get('/api/me', wrap(async (req, res) => {
   const m = await whoAmI();
   res.json({ connected: m.connected, riotId: m.riotId, region: m.region, level: m.level, profileIconId: m.profileIconId });
@@ -1044,7 +1050,18 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
 
 function saveBuildData() { if (crawler) crawler.save(); }
 
-module.exports = { startServer, getLiveData, getPrefs, saveBuildData };
+// ---------- Updates (main.js meld die stand; die blad wys dit) ----------
+let updateState = { state: 'none' };
+let installHandler = null;
+function setUpdateState(s) { updateState = { ...s, at: Date.now() }; }
+function onInstallRequest(fn) { installHandler = fn; }
+// Is jy in champ select of 'n spel? Dan herbegin ons nie die app nie.
+async function isBusy() {
+  if (['ChampSelect', 'GameStart', 'InProgress', 'Reconnect'].includes(lcuState.phase)) return true;
+  return (await getLiveData()).inGame;
+}
+
+module.exports = { startServer, getLiveData, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy };
 
 if (require.main === module) {
   startServer({ port: Number(process.env.PORT) || 3000 }).then((port) => {
