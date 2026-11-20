@@ -566,6 +566,7 @@ $('champGrid').addEventListener('click', (e) => {
 let buildReq = 0;
 async function openBuild(champKey, role, strict, vs) {
   const req = ++buildReq; // as jy vinnig tussen champions wissel, wen net die laaste antwoord
+  runeSel = 0;
   buildChamp = champKey;
   $('champSearch').value = '';
   showGrid(false);
@@ -645,6 +646,22 @@ function runePageHtml(e, games, main, noStats) {
   </div>`;
 }
 
+// Rune-kaart: kies tussen die gewildste bladsye en sit die gekose een met een klik in League
+let runeSel = 0;
+function runeCardHtml(r) {
+  if (!r.runes[0]) return '<div class="sub">No rune data.</div>';
+  const sel = Math.min(runeSel, r.runes.length - 1);
+  const e = r.runes[sel];
+  const base = r.fromMatchup.includes('runes') && r.vs ? r.vs.games : r.games;
+  const tabs = r.runes.length > 1 ? `<div class="rtabs">${r.runes.map((x, i) => `<button type="button" class="rtab ${i === sel ? 'on' : ''}" data-rune="${i}">
+      ${runeImgTag(x.page.primary[0], 'ks')}<span>${i === 0 ? 'Most popular' : `Option ${i + 1}`}<small>${wr(x)} win · ${pct(x.n / base)} pick</small></span></button>`).join('')}</div>` : '';
+  const stats = r.fromMatchup.includes('runes') && r.vs
+    ? `<b>${wr(e)}</b> win rate · ${e.n} games vs ${esc(champName(r.vs.championId))}`
+    : `<b>${wr(e)}</b> win rate · ${pct(e.n / r.games)} pick rate · ${e.n} games`;
+  return `${tabs}${runeTreeHtml(e.page, stats)}
+    <div class="ruse"><button class="imp" data-what="runes" ${lcuConnected ? '' : 'disabled title="Open the League client to import"'}>Use these runes</button><span class="hint ruse-msg"></span></div>`;
+}
+
 function renderBuild() {
   const b = buildData;
   const c = dd.champions[b.championId] || { id: '', name: `Champion ${b.championId}` };
@@ -701,12 +718,7 @@ function renderBuild() {
 
   $('buildView').innerHTML = head + `
     <div class="build-grid">
-      <div class="card"><h3>Runes${tag('runes')}</h3>${r.runes[0] ? runeTreeHtml(r.runes[0].page,
-          r.fromMatchup.includes('runes') && r.vs
-            ? `<b>${wr(r.runes[0])}</b> win rate · ${r.runes[0].n} games vs ${esc(champName(r.vs.championId))}`
-            : `<b>${wr(r.runes[0])}</b> win rate · ${pct(r.runes[0].n / r.games)} pick rate · ${r.runes[0].n} games`) : '<div class="sub">No rune data.</div>'}
-        ${r.runes.slice(1).length ? `<details><summary>Other popular pages</summary>${r.runes.slice(1).map((e) => runePageHtml(e, r.games, false)).join('')}</details>` : ''}
-      </div>
+      <div class="card"><h3>Runes${tag('runes')}</h3>${runeCardHtml(r)}</div>
       <div>
         <div class="card"><h3>Summoner spells${tag('spells')}</h3>${r.spells.map((e) => `<div class="spellrow">${e.ids.map((s) =>
           `<img src="${spellImg(s)}" alt="" title="${esc(dd.spells[s] ? dd.spells[s].name : '')}">`).join('')}
@@ -750,6 +762,8 @@ $('buildView').addEventListener('change', (e) => {
 });
 
 $('buildView').addEventListener('click', async (e) => {
+  const rt = e.target.closest('.rtab');
+  if (rt) { runeSel = Number(rt.dataset.rune) || 0; renderBuild(); return; }
   const mu = e.target.closest('.mu');
   if (mu) { openBuild(buildChamp, buildData.role, true, Number(mu.dataset.vs)); return; }
   const role = e.target.closest('.role');
@@ -757,16 +771,15 @@ $('buildView').addEventListener('click', async (e) => {
   const imp = e.target.closest('.imp');
   if (!imp || !buildData) return;
   const msg = $('importMsg');
-  msg.textContent = 'Importing…';
-  msg.className = 'hint';
+  const near = imp.closest('.ruse') ? imp.closest('.ruse').querySelector('.ruse-msg') : null; // boodskap langs die knoppie
+  const show = (text, cls) => { for (const m of [msg, near]) if (m) { m.textContent = text; m.className = (m === near ? 'hint ruse-msg ' : 'hint ') + cls; } };
+  show('Importing…', '');
   try {
     const vs = buildData.rec && buildData.rec.vs ? buildData.rec.vs.championId : null;
-    const res = await postJson('/api/lcu/import', { championId: buildData.championId, role: buildData.role, vs, what: imp.dataset.what.split(',') });
-    msg.textContent = importText(res);
-    msg.className = 'hint ' + (res.ok ? 'ok' : 'err');
+    const res = await postJson('/api/lcu/import', { championId: buildData.championId, role: buildData.role, vs, what: imp.dataset.what.split(','), runeIndex: runeSel });
+    show(importText(res), res.ok ? 'ok' : 'err');
   } catch (err) {
-    msg.textContent = err.message;
-    msg.className = 'hint err';
+    show(err.message, 'err');
   }
 });
 
@@ -799,14 +812,20 @@ let lastCsKey = '';
 let lastImportAt = 0;
 let counterKey = '';
 let counterData = null;
-async function loadCounters(enemyId, role) {
-  const key = `${enemyId}:${role}`;
+async function loadCounters(enemyId, role, mineId) {
+  const key = `${enemyId}:${role}:${mineId || 0}`;
   if (key === counterKey) return counterData;
   counterKey = key;
   counterData = null;
-  try { counterData = await api(`/api/builds/counters/${enemyId}?role=${role}`); } catch { counterData = { counters: [] }; }
+  try { counterData = await api(`/api/builds/counters/${enemyId}?role=${role}${mineId ? `&me=${mineId}` : ''}`); } catch { counterData = { counters: [] }; }
   return counterData;
 }
+const takenSet = (cs) => new Set([...(cs.enemies || []), ...(cs.bans || []),
+  ...(cs.allies || []).filter((a) => !a.me && a.championId).map((a) => a.championId)]);
+const wrCls = (x) => (x >= 0.5 ? 'good' : 'bad');
+const pickLine = (x) => `<img src="${champIcon(x.championId)}" alt=""><b>${esc(champName(x.championId))}</b>
+  <span class="${wrCls(x.wr)}">${pct(x.wr)} win</span>${x.laneWr != null ? ` · <span class="${wrCls(x.laneWr)}">${pct(x.laneWr)} lane</span>` : ''}
+  <span class="sub">· ${x.games} game${x.games === 1 ? '' : 's'}${x.games < 10 ? ', few so far' : ''}</span>`;
 
 let csPanelHtml = '';
 let csSort = 'wr';
@@ -822,8 +841,7 @@ async function loadBest(role) {
 
 // Tabel soos Blitz: champion, game-wenkoers, lane-wenkoers (voor in goud op 15 min) en hoeveel games
 function counterTable(list, cs, vsName) {
-  const taken = new Set([...(cs.enemies || []), ...(cs.bans || []),
-    ...(cs.allies || []).filter((a) => !a.me && a.championId).map((a) => a.championId)]);
+  const taken = takenSet(cs);
   const cls = (x) => (x >= 0.5 ? 'good' : 'bad');
   const sorted = [...list].sort((a, b) => (csSort === 'lane'
     ? ((b.laneScore ?? -1) - (a.laneScore ?? -1))
@@ -866,9 +884,26 @@ async function renderCsPanel(cs) {
       ? `<h3>Strongest ${roleName} picks right now</h3>${counterTable(list, cs, '')}` : '');
   } else {
     const vsName = champName(cs.vs);
-    const c = await loadCounters(cs.vs, cs.role);
+    const mineId = cs.locked ? cs.championId : 0;
+    const c = await loadCounters(cs.vs, cs.role, mineId);
     const list = (c && c.counters) || [];
     const best = (c && c.best) || [];
+    // Duidelik bo-aan: die beste pick teen jou laner (of, ná lock-in, hoe jou champion teen hom vaar)
+    const taken = takenSet(cs);
+    const top = list.find((x) => !taken.has(x.championId));
+    const topOverall = best.find((x) => !taken.has(x.championId));
+    let callout = '';
+    if (cs.locked && cs.championId) {
+      const m = c && c.mine;
+      callout = m && m.games
+        ? `<div class="cs-best"><span class="cb-label">Your matchup</span>${pickLine(m)} <span class="sub">vs ${esc(vsName)}</span></div>`
+        : `<div class="cs-best"><span class="cb-label">Your matchup</span><span class="sub">No games of ${esc(champName(cs.championId))} vs ${esc(vsName)} in RiftScout's data yet.</span></div>`;
+    } else if (top) {
+      callout = `<div class="cs-best"><span class="cb-label">Best pick vs ${esc(vsName)}</span>${pickLine(top)}</div>`;
+    } else if (topOverall) {
+      callout = `<div class="cs-best"><span class="cb-label">Strongest ${roleName} pick</span>${pickLine(topOverall)}
+        <span class="sub">(not enough games vs ${esc(vsName)} yet)</span></div>`;
+    }
     let inner = '';
     if (list.length) {
       inner += counterTable(list, cs, vsName) + `<div class="sub">Click a champion for its runes and build vs ${esc(vsName)}.
@@ -882,9 +917,9 @@ async function renderCsPanel(cs) {
         Your runes still import when you lock in.</div>`;
     }
     // Na lock-in: lys ingevou sodat jou runes en build bo-aan sigbaar is
-    body = cs.locked
+    body = callout + (cs.locked
       ? `<details class="cs-more"><summary>Best ${roleName} picks vs ${esc(vsName)}${list.length ? ` <small>(${list.length})</small>` : ''}</summary>${inner}</details>`
-      : `<h3>Best ${roleName} picks vs ${esc(vsName)}</h3>${inner}`;
+      : `<h3>Best ${roleName} picks vs ${esc(vsName)}</h3>${inner}`);
   }
   const html = `<div class="ep-row"><span class="ep-label">Enemy picks</span>${enemies || '<span class="sub">none yet</span>'}</div>${fixHint}${body}`;
   if (html !== csPanelHtml) { csPanelHtml = html; panel.innerHTML = html; }

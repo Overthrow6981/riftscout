@@ -449,3 +449,19 @@ ol.counters .few { color: var(--muted); opacity: .7; }
   .modal-box label.inline { display: block !important; }
   .modal-box label.inline select { display: block; width: 100%; margin-top: 4px; }
 }
+
+/* Kies tussen voorgestelde rune-bladsye */
+.rtabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.rtab { display: flex; align-items: center; gap: 6px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); font: inherit; font-size: 12px; padding: 4px 10px 4px 4px; border-radius: 999px; cursor: pointer; text-align: left; }
+.rtab img.ks { width: 26px; height: 26px; border-radius: 50%; }
+.rtab span { display: flex; flex-direction: column; line-height: 1.2; }
+.rtab small { font-size: 11px; }
+.rtab.on { border-color: var(--gold); color: var(--text); box-shadow: 0 0 0 1px var(--gold) inset; }
+.ruse { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+.ruse .imp { width: auto; padding: 8px 16px; }
+/* Beste pick / jou matchup bo-aan die champ select-paneel */
+.cs-best { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; margin: 12px 0 4px; padding: 10px 12px; border-radius: 10px; background: linear-gradient(90deg, rgba(232,182,76,.12), var(--panel2)); border: 1px solid rgba(232,182,76,.45); font-size: 14px; }
+.cs-best .cb-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: var(--gold); margin-right: 4px; }
+.cs-best img { width: 28px; height: 28px; border-radius: 6px; }
+.cs-best .good { color: #4ade80; font-weight: 700; }
+.cs-best .bad { color: #f87171; font-weight: 700; }
