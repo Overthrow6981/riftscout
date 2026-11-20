@@ -389,27 +389,53 @@ function buildFor(championId, role, strict, vs) {
 // Counter-picks teen 'n vyand in 'n rol
 function countersFor(enemyId, role) {
   const roles = db.rolesFor(enemyId);
-  const use = role || (roles[0] ? roles[0].role : '');
+  const use = role || (roles[0] ? roles[0].role : '') || (riotPositions.map[enemyId] || [])[0] || '';
   if (!use) return { enemyId, role: '', counters: [] };
-  return { enemyId, role: use, counters: builds.counterPicks(db.statsFor(enemyId, use).stats) };
+  return { enemyId, role: use, counters: builds.counterPicks(db.statsFor(enemyId, use).stats, 5, 15) };
 }
 
-// Raai die vyand se rolle en kies die een in my lane
-function enemyLaner(enemyIds, myRole) {
+// Riot se eie lys van watter posisies elke champion speel (uit die League-kliënt) – werk sonder build-data
+let riotPositions = { at: 0, map: {} };
+async function refreshRiotPositions() {
+  if (Date.now() - riotPositions.at < 6 * 3600e3 && Object.keys(riotPositions.map).length) return;
+  const m = await lcu.recommendedPositions().catch(() => null);
+  riotPositions = { at: Date.now(), map: m && Object.keys(m).length ? m : riotPositions.map };
+}
+
+// Hoe waarskynlik speel 'n champion elke rol: ons eie data as daar genoeg is, anders Riot se posisies, anders sy tipe
+const TAG_PRIOR = {
+  Marksman: { BOTTOM: 6 }, Support: { UTILITY: 6 }, Mage: { MIDDLE: 3, UTILITY: 1 },
+  Assassin: { MIDDLE: 3, JUNGLE: 1 }, Fighter: { TOP: 3, JUNGLE: 1 }, Tank: { TOP: 2, UTILITY: 1, JUNGLE: 1 },
+};
+function rolePrior(championId) {
+  const data = Object.fromEntries(db.rolesFor(championId).map((r) => [r.role, r.games]));
+  if (Object.values(data).reduce((x, y) => x + y, 0) >= 20) return data;
+  const rp = riotPositions.map[championId];
+  if (rp && rp.length) {
+    const m = {};
+    rp.forEach((r, i) => { m[r] = (m[r] || 0) + ([6, 3, 1][i] || 1); });
+    return m;
+  }
+  const m = {};
+  const tags = (DD && DD.champions[championId] && DD.champions[championId].tags) || [];
+  for (const t of tags) for (const [r, w] of Object.entries(TAG_PRIOR[t] || {})) m[r] = (m[r] || 0) + w;
+  return m;
+}
+
+// Raai die vyand se rolle; gee ook die een in my lane (net as ons redelik seker is)
+function enemyRoles(enemyIds) {
+  if (!enemyIds.length) return {};
+  return builds.guessRoles(enemyIds.map((id) => ({ championId: id, roles: rolePrior(id) })));
+}
+function enemyLaner(enemyIds, myRole, assign) {
   if (!myRole || !enemyIds.length) return null;
-  const roleGames = enemyIds.map((id) => ({
-    championId: id,
-    roles: Object.fromEntries(db.rolesFor(id).map((r) => [r.role, r.games])),
-  }));
-  const assign = builds.guessRoles(roleGames);
-  const hit = Object.entries(assign).find(([, r]) => r === myRole);
-  // Net seker genoeg as al 5 bekend is, of as die champion hoofsaaklik daardie rol speel
+  const hit = Object.entries(assign || enemyRoles(enemyIds)).find(([, r]) => r === myRole);
   if (!hit) return null;
   const id = Number(hit[0]);
-  const rg = roleGames.find((x) => x.championId === id).roles;
-  const total = Object.values(rg).reduce((a, b) => a + b, 0);
+  const rg = rolePrior(id);
+  const total = Object.values(rg).reduce((x, y) => x + y, 0);
   const share = total ? (rg[myRole] || 0) / total : 0;
-  return enemyIds.length >= 5 || share >= 0.6 ? id : null;
+  return enemyIds.length >= 5 || share >= 0.5 ? id : null;
 }
 
 const ROLE_NAMES = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'ADC', UTILITY: 'Support' };
@@ -447,7 +473,17 @@ async function doImport(championId, role, what, cs, vs) {
   const rec = b.rec;
   const champ = (DD && DD.champions[championId]) || { name: 'Champion' };
   if (!rec || rec.games < MIN_GAMES) {
-    return { ok: false, retry: true, championId, error: `Not enough build data for ${champ.name} yet - RiftScout is still collecting.` };
+    // Nog nie genoeg eie data nie: gebruik Riot se aanbevole runes en spells uit die kliënt (dadelik beskikbaar)
+    const pos = role || (riotPositions.map[championId] || [])[0] || '';
+    const page = await lcu.recommendedPage(championId, pos).catch(() => null);
+    if (!page) return { ok: false, retry: true, championId, error: `No runes for ${champ.name} yet – is the League client open?` };
+    const results = {};
+    if (what.has('runes')) results.runes = await lcu.importRunes(page, `RiftScout ${champ.name}`, getPrefs().replaceRunePage);
+    if (what.has('spells') && page.spells.length === 2) results.spells = await lcu.setSpells(...orderSpells(page.spells, cs));
+    return {
+      ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: pos,
+      vs: vs || null, vsName: '', matchupSpecific: false, source: 'riot', results, at: Date.now(),
+    };
   }
   const results = {};
   const replace = getPrefs().replaceRunePage;
@@ -472,7 +508,12 @@ async function lcuTick() {
   lcuBusy = true;
   try {
     const st = await lcu.state();
-    if (st.champSelect) st.champSelect.vs = enemyLaner(st.champSelect.enemies || [], st.champSelect.role);
+    if (st.connected) await refreshRiotPositions();
+    if (st.champSelect) {
+      const cs = st.champSelect;
+      cs.enemyRoles = enemyRoles(cs.enemies || []);
+      cs.vs = enemyLaner(cs.enemies || [], cs.role, cs.enemyRoles);
+    }
     lcuState = st;
     // Hou "is League oop?" dadelik op datum (en tel jou rekening en bediener op sodra League oopmaak)
     if (!!st.connected !== !!me.connected) me.at = 0;
@@ -519,21 +560,11 @@ async function whoAmI() {
   return me;
 }
 
-// Watter rolle 'n champion gewoonlik speel: uit die build-data, anders uit Riot se champion-tipes.
-// Smite (11) beteken jungle; iemand sonder Smite is nie die jungler nie.
-const TAG_PRIOR = {
-  Marksman: { BOTTOM: 6 }, Support: { UTILITY: 6 }, Mage: { MIDDLE: 3, UTILITY: 1 },
-  Assassin: { MIDDLE: 3, JUNGLE: 1 }, Fighter: { TOP: 3, JUNGLE: 1 }, Tank: { TOP: 2, UTILITY: 1, JUNGLE: 1 },
-};
+// Rolle vir lobby-scouting. Smite (11) beteken jungle; iemand sonder Smite is nie die jungler nie.
 function roleMapOf(championId, spells) {
   const known = Array.isArray(spells) && spells.some(Boolean);
   if (known && spells.includes(11)) return { JUNGLE: 1 };
-  let m = Object.fromEntries(db.rolesFor(championId).map((r) => [r.role, r.games]));
-  if (!Object.values(m).some(Boolean)) {
-    m = {};
-    const tags = (DD && DD.champions[championId] && DD.champions[championId].tags) || [];
-    for (const t of tags) for (const [r, w] of Object.entries(TAG_PRIOR[t] || {})) m[r] = (m[r] || 0) + w;
-  }
+  const m = { ...rolePrior(championId) };
   if (known) delete m.JUNGLE;
   return m;
 }
@@ -625,12 +656,18 @@ async function computeLobby() {
   // --- Champ select: my span ---
   if (phase === 'ChampSelect' && lcuState.champSelect) {
     const allies = lcuState.champSelect.allies || [];
-    const key = 'cs:' + allies.map((a) => `${a.puuid}:${a.championId}`).join(',');
+    const csEnemies = lcuState.champSelect.enemies || [];
+    const key = 'cs:' + allies.map((a) => `${a.puuid}:${a.championId}`).join(',') + '|' + csEnemies.join(',') + '|' + (lcuState.champSelect.vs || '');
     if (lobby.key === key && lobby.data) return lobby.data;
     const players = await Promise.all(allies.map((a) => (a.puuid
       ? scoutPlayer(region, { puuid: a.puuid, riotId: a.gameName ? `${a.gameName}#${a.tagLine}` : '', championId: a.championId, teamId: 100, role: a.role, me: a.me }, true)
       : { hidden: true, championId: a.championId, teamId: 100, role: a.role, me: a.me, tags: [] })));
-    const data = { phase: 'ChampSelect', region, myTeamId: 100, teams: [{ teamId: 100, mine: true, players }], hiddenNames: allies.some((a) => !a.puuid && !a.me), at: Date.now() };
+    // Vyande: Riot wys in champ select net hul champions (nie name nie)
+    const er = lcuState.champSelect.enemyRoles || {};
+    const enemyPlayers = csEnemies.map((championId) => ({ enemyPick: true, championId, teamId: 200, role: er[championId] || '', opp: championId === lcuState.champSelect.vs, tags: [] }));
+    const teams = [{ teamId: 100, mine: true, players }];
+    teams.push({ teamId: 200, mine: false, players: enemyPlayers });
+    const data = { phase: 'ChampSelect', region, myTeamId: 100, teams, hiddenNames: allies.some((a) => !a.puuid && !a.me), at: Date.now() };
     lobby = { key, data };
     return data;
   }
@@ -987,7 +1024,13 @@ app.get('/api/builds/champion/:id', wrap(async (req, res) => {
   if (!Number.isInteger(id) || id <= 0) throw httpError(400, 'Invalid champion.');
   const role = String(req.query.role || '').toUpperCase();
   const vs = Number(req.query.vs) || null;
-  res.json(buildFor(id, builds.ROLES.includes(role) ? role : '', req.query.strict === '1', vs));
+  const b = buildFor(id, builds.ROLES.includes(role) ? role : '', req.query.strict === '1', vs);
+  if (!b.rec || b.rec.games < MIN_GAMES) {
+    if (!b.role) b.role = (riotPositions.map[id] || [])[0] || '';
+    b.riot = lcuState.connected ? await lcu.recommendedPage(id, b.role).catch(() => null) : null;
+  }
+  b.riotRoles = riotPositions.map[id] || [];
+  res.json(b);
 }));
 
 app.get('/api/builds/counters/:id', wrap(async (req, res) => {
@@ -1034,7 +1077,7 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
     const loadDD = () => getDDragon().catch(() => setTimeout(loadDD, 60000));
     loadDD();
     loadRemoteBuilds();
-    setInterval(loadRemoteBuilds, 6 * 3600 * 1000).unref();
+    setInterval(loadRemoteBuilds, 3600 * 1000).unref(); // elke uur: nuwe gedeelde data kom vinnig by almal uit
     setInterval(lcuTick, 2000).unref();
     updateCrawler();
   }

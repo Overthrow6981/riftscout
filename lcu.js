@@ -91,16 +91,22 @@ async function state() {
     const s = await request('GET', '/lol-champ-select/v1/session');
     if (s.status === 200 && s.data) {
       const me = (s.data.myTeam || []).find((x) => x.cellId === s.data.localPlayerCellId);
+      // Vyandige picks: uit theirTeam én uit die voltooide pick-aksies (wat ook al eerste opdaag)
+      const theirCells = new Set((s.data.theirTeam || []).map((x) => x.cellId));
+      const enemyIds = new Set((s.data.theirTeam || []).map((x) => x.championId).filter((id) => id > 0));
+      for (const a of (s.data.actions || []).flat()) {
+        if (a && a.type === 'pick' && a.completed && a.championId > 0 && theirCells.has(a.actorCellId)) enemyIds.add(a.championId);
+      }
       if (me) {
         const locked = (s.data.actions || []).flat().some((a) => a.actorCellId === me.cellId && a.type === 'pick' && a.completed);
         champSelect = {
           championId: me.championId || me.championPickIntent || 0,
           locked: locked && !!me.championId,
-          role: POSITIONS[me.assignedPosition] || '',
+          role: POSITIONS[String(me.assignedPosition || '').toLowerCase()] || '',
           spell1Id: me.spell1Id || 0,
           spell2Id: me.spell2Id || 0,
           // Vyande se champions (sigbaar sodra hulle gekies is)
-          enemies: (s.data.theirTeam || []).map((x) => x.championId).filter((id) => id > 0),
+          enemies: [...enemyIds],
           // Spanmaats vir lobby-scouting (in ranked kan Riot name/puuid versteek)
           // Riot se reëls: versteekte name (ranked) word NIE ontmasker nie
           allies: (s.data.myTeam || []).map((x) => {
@@ -111,7 +117,7 @@ async function state() {
             gameName: hidden ? '' : (x.gameName || ''),
             tagLine: hidden ? '' : (x.tagLine || ''),
             championId: x.championId || x.championPickIntent || 0,
-            role: POSITIONS[x.assignedPosition] || '',
+            role: POSITIONS[String(x.assignedPosition || '').toLowerCase()] || '',
             me: x.cellId === s.data.localPlayerCellId,
             };
           }),
@@ -211,6 +217,49 @@ async function identity() {
   };
 }
 
+// ---------- Riot se eie aanbevelings in die kliënt (werk sonder enige build-data) ----------
+const ROLE_ALIASES = { TOP: 'TOP', JUNGLE: 'JUNGLE', MIDDLE: 'MIDDLE', MID: 'MIDDLE', BOTTOM: 'BOTTOM', BOT: 'BOTTOM', ADC: 'BOTTOM', UTILITY: 'UTILITY', SUPPORT: 'UTILITY' };
+
+// Watter posisies elke champion gespeel word: { championId: ['MIDDLE', 'TOP'] }
+async function recommendedPositions() {
+  const r = await request('GET', '/lol-perks/v1/recommended-champion-positions');
+  if (!ok(r) || !r.data || typeof r.data !== 'object') return null;
+  const out = {};
+  for (const [id, v] of Object.entries(r.data)) {
+    const list = (v && v.recommendedPositions) || [];
+    const roles = [...new Set(list.map((x) => ROLE_ALIASES[String(x).toUpperCase()]).filter(Boolean))];
+    if (roles.length) out[Number(id)] = roles;
+  }
+  return out;
+}
+
+// Riot se aanbevole rune page (en spells) vir 'n champion in 'n posisie
+const SHARD = (id) => id >= 5000 && id < 5100;
+async function recommendedPage(championId, role) {
+  const tries = [...new Set([role, String(role || '').toLowerCase(), role === 'MIDDLE' ? 'MID' : '', role === 'UTILITY' ? 'SUPPORT' : '', 'NONE'].filter(Boolean))];
+  for (const pos of tries) {
+    const r = await request('GET', `/lol-perks/v1/recommended-pages/champion/${Number(championId)}/position/${encodeURIComponent(pos)}/map/11`);
+    if (!ok(r) || !Array.isArray(r.data) || !r.data.length) continue;
+    const want = ROLE_ALIASES[String(role || '').toUpperCase()];
+    const p = r.data.find((x) => ROLE_ALIASES[String(x.position || '').toUpperCase()] === want) || r.data[0];
+    const perks = (p.perks || []).filter((k) => k && k.id);
+    const runes = perks.filter((k) => !SHARD(k.id));
+    let primary = runes.filter((k) => k.styleId === p.primaryPerkStyleId).map((k) => k.id);
+    let secondary = runes.filter((k) => k.styleId !== p.primaryPerkStyleId).map((k) => k.id);
+    let shards = perks.filter((k) => SHARD(k.id)).map((k) => k.id);
+    if (primary.length !== 4 || secondary.length !== 2 || shards.length !== 3) {
+      if (perks.length !== 9) continue;
+      const ids = perks.map((k) => k.id); // volgorde: 4 primêr, 2 sekondêr, 3 shards
+      primary = ids.slice(0, 4); secondary = ids.slice(4, 6); shards = ids.slice(6, 9);
+    }
+    return {
+      primaryStyleId: p.primaryPerkStyleId, subStyleId: p.secondaryPerkStyleId, primary, secondary, shards,
+      spells: Array.isArray(p.summonerSpellIds) ? p.summonerSpellIds.filter(Boolean) : [],
+    };
+  }
+  return null;
+}
+
 // ---------- Spelerdata uit die kliënt (geen Riot API-sleutel nodig nie) ----------
 // Die kliënt kan net spelers op jou eie bediener opsoek.
 const EMPTY_PUUID = '00000000-0000-0000-0000-000000000000';
@@ -299,4 +348,5 @@ async function gameSession() {
 module.exports = {
   state, importRunes, importItemSet, setSpells, identity,
   lookupRiotId, summonerByPuuid, ranked, masteries, matchList, game, gameSession, okPuuid,
+  recommendedPositions, recommendedPage,
 };
