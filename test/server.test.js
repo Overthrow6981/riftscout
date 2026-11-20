@@ -76,6 +76,11 @@ test('gedeelde build-data (saamgepak) laai, en counters wys game- en lane-%', as
   assert.equal(annie.laneWr, 5 / 8);
   const best = (await call(port, 'GET', '/api/builds/best?role=MIDDLE')).json.best;
   assert.ok(best.some((x) => x.championId === 1));
+  // Ná lock-in: hoe vaar jou eie champion (Annie) teen die vyand (Zed)
+  const mine = (await call(port, 'GET', '/api/builds/counters/238?role=MIDDLE&me=1')).json.mine;
+  assert.deepEqual([mine.games, mine.wr, mine.laneWr], [8, 0.75, 5 / 8]);
+  const none = (await call(port, 'GET', '/api/builds/counters/238?role=MIDDLE&me=99999')).json.mine;
+  assert.equal(none.games, 0, 'geen games = 0, nie \'n fout nie');
   const build = (await call(port, 'GET', '/api/builds/champion/1?role=MIDDLE&vs=238')).json;
   assert.equal(build.rec.vs.games, 8);
   assert.deepEqual(build.rec.vs.lane, [8, 5]);
