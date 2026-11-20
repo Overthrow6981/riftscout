@@ -2,7 +2,7 @@
 
 A League of Legends companion app for Windows – like Blitz, but simple. **No API key needed:** RiftScout reads your profile, match history and lobby from the League client on your PC.
 
-- **Builds & runes** for every champion and role, calculated from Challenger, Grandmaster and Master ranked games: rune page, summoner spells, skill order, starting items, boots, core build and 4th–6th item options, with win and pick rates.
+- **Builds & runes** for every champion and role, calculated from Challenger, Grandmaster and Master ranked games on every server (EUW, NA, KR, EUNE, BR, LAN, LAS, OCE, TR, RU, JP, ME, SEA, TW, VN): rune page, summoner spells, skill order, starting items, boots, core build and 4th–6th item options, with win and pick rates.
 - **Matchups:** builds, runes, spells and skill order *against your lane opponent*, matchup win rates, "strong against" / "weak against" lists and counter picks.
 - **Champ select:** see the enemy picks as they lock in, which one is your lane opponent (click another enemy if the guess is wrong), and a ranked list of the best picks for your role against them with **Game %** (wins the game) and **Lane %** (ahead in gold at 15 minutes) – click one for its runes and build in that matchup. Before the enemy picks you see the strongest picks for your role.
 - **Full rune pages** like in the client: every option in both trees and the stat shards, with the chosen ones lit up.

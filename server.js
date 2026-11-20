@@ -339,7 +339,7 @@ async function getDDragon() {
 let db = null;
 let seen = null;
 let crawler = null;
-let remoteInfo = { matches: 0, updated: 0 };
+let remoteInfo = { matches: 0, updated: 0, regions: [] };
 let lastUserActivity = 0;
 
 // Streek vir build-data: jou keuse in Settings, anders jou eie bediener (uit League), anders jou laaste soektog
@@ -360,7 +360,11 @@ function updateCrawler() {
 async function loadRemoteBuilds() {
   const file = path.join(DATA_DIR, 'remote-builds.json');
   const use = (d) => {
-    if (d && d.patches) { db.remote = d; remoteInfo = { matches: d.matches || 0, updated: d.updated || 0 }; return true; }
+    if (d && d.patches) {
+      db.remote = d;
+      remoteInfo = { matches: d.matches || 0, updated: d.updated || 0, regions: Object.keys(d.regions || {}).sort((a, b) => d.regions[b] - d.regions[a]) };
+      return true;
+    }
     return false;
   };
   if (!db.remote) { try { use(JSON.parse(fs.readFileSync(file, 'utf8'))); } catch { /* nog niks gestoor nie */ } }
@@ -1073,6 +1077,7 @@ app.get('/api/builds/status', (req, res) => res.json({
   region: crawlRegion(),
   sharedMatches: remoteInfo.matches,
   sharedUpdated: remoteInfo.updated,
+  sharedRegions: remoteInfo.regions.map((r) => REGION_NAMES[r] || r.toUpperCase()),
 }));
 
 app.get('/api/builds/champion/:id', wrap(async (req, res) => {

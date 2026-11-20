@@ -316,11 +316,18 @@ class BuildDB {
   save() {
     const patches = Object.keys(this.data.patches).sort(comparePatch).reverse();
     for (const p of patches.slice(KEEP_PATCHES)) delete this.data.patches[p];
-    for (const P of Object.values(this.data.patches)) {
+    // Builds gebruik net die nuutste 2 patches; ouer patches hou net matchup-wenkoerse (kleiner lêer)
+    const fullVs = new Set(patches.filter((p) => p !== 'unknown').slice(0, 2));
+    for (const [name, P] of Object.entries(this.data.patches)) {
       for (const C of Object.values(P.champs)) {
         for (const s of Object.values(C)) {
           for (const k of MAP_KEYS) s[k] = prune(s[k]);
-          for (const m of Object.values(s.vs || {})) for (const k of VS_KEYS) m[k] = prune(m[k], VS_MAP_LIMIT);
+          for (const m of Object.values(s.vs || {})) {
+            for (const k of VS_KEYS) {
+              if (fullVs.has(name)) m[k] = prune(m[k], VS_MAP_LIMIT);
+              else delete m[k];
+            }
+          }
         }
       }
     }
@@ -485,8 +492,8 @@ function buildPath(rec) {
 
 // ---------- Versamelaar ----------
 class Crawler {
-  constructor({ riot, db, seen, getRegion, getClassifier, hasKey, isUserBusy, paceMs = 1700, log = () => {} }) {
-    Object.assign(this, { riot, db, seen, getRegion, getClassifier, hasKey, isUserBusy, paceMs, log });
+  constructor({ riot, db, seen, getRegion, getClassifier, hasKey, isUserBusy, paceMs = 1700, autoSave = true, log = () => {} }) {
+    Object.assign(this, { riot, db, seen, getRegion, getClassifier, hasKey, isUserBusy, paceMs, autoSave, log });
     this.running = false;
     this.state = 'idle';
     this.lastError = null;
@@ -548,7 +555,7 @@ class Crawler {
         await sleep(10000);
       }
     }
-    this.save();
+    if (this.autoSave) this.save();
   }
 
   async refill() {
@@ -577,8 +584,10 @@ class Crawler {
     if (info.queueId !== 420 || Date.now() - (info.gameCreation || 0) > MAX_AGE_MS || (info.gameDuration || 0) < 900) return;
     const timeline = await this.call(route, `/lol/match/v5/matches/${encodeURIComponent(id)}/timeline`);
     this.db.addMatch(patchOf(info.gameVersion), analyzeMatch(match, timeline, cls));
+    const R = this.db.data.regions || (this.db.data.regions = {}); // van watter bedieners die data kom
+    R[this.region] = (R[this.region] || 0) + 1;
     this.session++;
-    if (this.db.dirty >= 10) this.save();
+    if (this.autoSave && this.db.dirty >= 10) this.save();
   }
 
   save() {
