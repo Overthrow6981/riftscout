@@ -107,6 +107,9 @@ async function state() {
           spell2Id: me.spell2Id || 0,
           // Vyande se champions (sigbaar sodra hulle gekies is)
           enemies: [...enemyIds],
+          // Gebande champions (kan nie meer gekies word nie)
+          bans: [...new Set((s.data.actions || []).flat()
+            .filter((a) => a && a.type === 'ban' && a.completed && a.championId > 0).map((a) => a.championId))],
           // Spanmaats vir lobby-scouting (in ranked kan Riot name/puuid versteek)
           // Riot se reëls: versteekte name (ranked) word NIE ontmasker nie
           allies: (s.data.myTeam || []).map((x) => {

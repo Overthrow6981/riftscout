@@ -9,6 +9,7 @@ const express = require('express');
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
+const zlib = require('zlib');
 const builds = require('./builds');
 const lcu = require('./lcu');
 
@@ -315,9 +316,11 @@ async function getDDragon() {
     const spells = {};
     for (const s of Object.values(spellsRaw.data)) spells[s.key] = { name: s.name, image: s.image.full };
     const runes = {};
+    const trees = []; // volle rune-bome (vir die Blitz-agtige rune-bladsy met alle opsies)
     for (const style of runesRaw) {
       runes[style.id] = { name: style.name, icon: style.icon };
       for (const slot of style.slots) for (const r of slot.runes) runes[r.id] = { name: r.name, icon: r.icon };
+      trees.push({ id: style.id, name: style.name, icon: style.icon, slots: style.slots.map((sl) => sl.runes.map((r) => r.id)) });
     }
     const champions = {};
     for (const c of Object.values(champsRaw.data)) champions[c.key] = { id: c.id, name: c.name, tags: c.tags || [] };
@@ -325,7 +328,7 @@ async function getDDragon() {
     const items = {};
     for (const [id, it] of Object.entries(full)) items[id] = { name: it.name, gold: it.gold };
     itemCls = builds.itemClassifier(full);
-    DD = { version: v, spells, runes, champions, items };
+    DD = { version: v, spells, runes, trees, champions, items };
     return DD;
   });
 }
@@ -360,11 +363,19 @@ async function loadRemoteBuilds() {
   };
   if (!db.remote) { try { use(JSON.parse(fs.readFileSync(file, 'utf8'))); } catch { /* nog niks gestoor nie */ } }
   try {
-    const r = await fetch(REMOTE_BUILDS_URL, { signal: AbortSignal.timeout(60000) });
-    if (!r.ok) return;
-    const text = await r.text();
-    if (use(JSON.parse(text))) fs.writeFileSync(file, text);
+    const text = await fetchRemoteBuilds();
+    if (text && use(JSON.parse(text))) fs.writeFileSync(file, text);
   } catch { /* geen gedeelde data beskikbaar nie */ }
+}
+
+// Gedeelde data: eers die saamgepakte weergawe (baie kleiner aflaai), anders die gewone JSON
+async function fetchRemoteBuilds() {
+  try {
+    const r = await fetch(REMOTE_BUILDS_URL + '.gz', { signal: AbortSignal.timeout(120000) });
+    if (r.ok) return zlib.gunzipSync(Buffer.from(await r.arrayBuffer())).toString('utf8');
+  } catch { /* probeer die gewone lêer */ }
+  const r = await fetch(REMOTE_BUILDS_URL, { signal: AbortSignal.timeout(120000) });
+  return r.ok ? r.text() : null;
 }
 
 function buildFor(championId, role, strict, vs) {
@@ -377,21 +388,33 @@ function buildFor(championId, role, strict, vs) {
   const { stats, patches } = db.statsFor(championId, use);
   const all = use ? builds.matchups(stats, 1) : [];
   const solid = all.filter((m) => m.games >= 5);
+  const rec = use ? builds.recommend(stats, vs || null) : null;
+  if (rec && vs) {
+    // Dieselfde syfers as die counter-lys in champ select (alle gestoorde patches)
+    const m = db.statsFor(championId, use, builds.KEEP_PATCHES).stats.vs[vs];
+    if (m) rec.vs = { championId: Number(vs), games: m.games, wins: m.wins, lane: m.lane || null };
+  }
   return {
     championId, role: use || '', roles, patches, minGames: MIN_GAMES, matchupMin: builds.MATCHUP_MIN,
-    rec: use ? builds.recommend(stats, vs || null) : null,
+    rec,
     opponents: all.sort((a, b) => b.games - a.games).map(({ championId: id, games }) => ({ championId: id, games })),
     strongAgainst: solid.filter((m) => m.wr >= 0.5).sort((a, b) => b.wr - a.wr || b.games - a.games).slice(0, 6),
     weakAgainst: solid.filter((m) => m.wr < 0.5).sort((a, b) => a.wr - b.wr || b.games - a.games).slice(0, 6),
   };
 }
 
-// Counter-picks teen 'n vyand in 'n rol
+// Counter-picks teen 'n vyand in 'n rol: game- en lane-wenkoers van elke champion teen hom.
+// As daar nog te min matchup-games is, ook die sterkste champions in die rol oor die algemeen.
+const COUNTER_MIN = 3;
 function countersFor(enemyId, role) {
   const roles = db.rolesFor(enemyId);
   const use = role || (roles[0] ? roles[0].role : '') || (riotPositions.map[enemyId] || [])[0] || '';
-  if (!use) return { enemyId, role: '', counters: [] };
-  return { enemyId, role: use, counters: builds.counterPicks(db.statsFor(enemyId, use).stats, 5, 15) };
+  if (!use) return { enemyId, role: '', counters: [], best: [] };
+  const enemy = db.statsFor(enemyId, use, builds.KEEP_PATCHES).stats;
+  const counters = builds.counterPicks(enemy, COUNTER_MIN, 20);
+  const best = counters.length >= 5 ? [] : builds.bestInRole(db.roleTable(use, builds.KEEP_PATCHES), 20, 10,
+    [enemyId, ...counters.map((c) => c.championId)]);
+  return { enemyId, role: use, enemyGames: enemy.games, minGames: COUNTER_MIN, counters, best };
 }
 
 // Riot se eie lys van watter posisies elke champion speel (uit die League-kliënt) – werk sonder build-data
@@ -500,6 +523,7 @@ async function doImport(championId, role, what, cs, vs) {
 
 // ---------- League-kliënt: champ select dophou en outomaties invoer ----------
 let lcuState = { connected: false, phase: null, champSelect: null };
+let vsOverride = null; // lane-teenstander wat die speler self gekies het (as ons raaiskoot verkeerd is)
 let lastImport = null;
 let lastAutoKey = '';
 let lcuBusy = false;
@@ -512,14 +536,16 @@ async function lcuTick() {
     if (st.champSelect) {
       const cs = st.champSelect;
       cs.enemyRoles = enemyRoles(cs.enemies || []);
-      cs.vs = enemyLaner(cs.enemies || [], cs.role, cs.enemyRoles);
+      cs.vsAuto = enemyLaner(cs.enemies || [], cs.role, cs.enemyRoles);
+      cs.vsManual = !!vsOverride && (cs.enemies || []).includes(vsOverride);
+      cs.vs = cs.vsManual ? vsOverride : cs.vsAuto;
     }
     lcuState = st;
     // Hou "is League oop?" dadelik op datum (en tel jou rekening en bediener op sodra League oopmaak)
     if (!!st.connected !== !!me.connected) me.at = 0;
     if (st.connected || me.at === 0) whoAmI().catch(() => {});
     if ((API_KEY || st.connected) && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
-    if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; return; }
+    if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; vsOverride = null; return; }
     const cs = lcuState.champSelect;
     if (!cs || !cs.championId || !cs.locked || !getPrefs().autoImport) return;
     // Sleutel sluit die teenstander in: as die vyand later kies, word die matchup-build ingevoer
@@ -1045,6 +1071,21 @@ app.get('/api/builds/counters/:id', wrap(async (req, res) => {
   if (!Number.isInteger(id) || id <= 0) throw httpError(400, 'Invalid champion.');
   const role = String(req.query.role || '').toUpperCase();
   res.json(countersFor(id, builds.ROLES.includes(role) ? role : ''));
+}));
+
+app.get('/api/builds/best', wrap(async (req, res) => {
+  const role = String(req.query.role || '').toUpperCase();
+  if (!builds.ROLES.includes(role)) throw httpError(400, 'Invalid role.');
+  res.json({ role, best: builds.bestInRole(db.roleTable(role, builds.KEEP_PATCHES), 20, 15) });
+}));
+
+// Speler kies self wie sy lane-teenstander is (0 = terug na RiftScout se raaiskoot)
+app.post('/api/lcu/vs', wrap(async (req, res) => {
+  requireJson(req);
+  const id = Number(req.body && req.body.championId) || 0;
+  vsOverride = id > 0 ? id : null;
+  await lcuTick();
+  res.json({ ok: true, vs: lcuState.champSelect ? lcuState.champSelect.vs : null });
 }));
 
 app.get('/api/lcu/state', (req, res) => res.json({ ...lcuState, lastImport }));

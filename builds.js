@@ -11,7 +11,8 @@ const SLOT = { 1: 'Q', 2: 'W', 3: 'E', 4: 'R' };
 const MAP_KEYS = ['runes', 'spells', 'start', 'core', 'boots', 'items', 'item4', 'item5', 'item6', 'maxOrder', 'skills'];
 // Per lane-teenstander hou ons 'n kleiner stel by (genoeg vir 'n matchup-build)
 const VS_KEYS = ['runes', 'spells', 'start', 'core', 'boots', 'items', 'maxOrder'];
-const VS_MAP_LIMIT = 15;
+const VS_MAP_LIMIT = 8;   // matchup-data klein hou sodat die gedeelde lêer nie te groot word nie
+const LANE_MS = 15 * 60000; // lane-oorwinning = meer goud as jou lane-teenstander op 15 minute
 const MATCHUP_MIN = 8;   // minimum wedstryde teen 'n champion voor ons 'n matchup-build gee
 const SECTION_MIN = 3;   // minimum wedstryde vir 'n spesifieke keuse binne 'n matchup
 const MAX_AGE_MS = 21 * 24 * 3600 * 1000; // net wedstryde van die laaste 3 weke
@@ -114,7 +115,16 @@ function analyzeMatch(match, timeline, cls) {
   const info = match.info;
   const purchases = {};
   const skills = {};
-  for (const frame of (timeline && timeline.info && timeline.info.frames) || []) {
+  const frames = (timeline && timeline.info && timeline.info.frames) || [];
+  // Raam naaste aan 15:00 (raampies is elke minuut) vir die lane-goud
+  let laneFrame = null;
+  for (const f of frames) if (f.participantFrames && (f.timestamp || 0) <= LANE_MS + 30000) laneFrame = f;
+  if (laneFrame && (laneFrame.timestamp || 0) < LANE_MS - 60000) laneFrame = null;
+  const goldAt = (pid) => {
+    const pf = laneFrame && laneFrame.participantFrames[pid];
+    return pf && typeof pf.totalGold === 'number' ? pf.totalGold : null;
+  };
+  for (const frame of frames) {
     for (const ev of frame.events || []) {
       const pid = ev.participantId;
       if (ev.type === 'ITEM_PURCHASED') {
@@ -139,11 +149,14 @@ function analyzeMatch(match, timeline, cls) {
     for (const b of buys) if (cls.isCompleted(b.id) && !completed.includes(b.id)) completed.push(b.id);
     const firstBoots = buys.find((b) => cls.isBoots(b.id));
     const seq = skills[p.participantId] || [];
+    const g1 = goldAt(p.participantId);
+    const g2 = opp ? goldAt(opp.participantId) : null;
     rows.push({
       championId: p.championId,
       role,
       vs: opp && opp.championId ? opp.championId : null,
       win: !!p.win,
+      laneWin: g1 != null && g2 != null && g1 !== g2 ? g1 > g2 : null,
       runes: runeKey(p.perks),
       spells: [p.summoner1Id, p.summoner2Id].sort((a, b) => a - b).join(','),
       start: start.length ? start.join(',') : null,
@@ -178,11 +191,13 @@ function bump(map, key, win, n = 1, w = win ? 1 : 0) {
 function mergeRole(target, src) {
   target.games += src.games || 0;
   target.wins += src.wins || 0;
+  if (src.lane) bump(target, 'lane', false, src.lane[0], src.lane[1]);
   for (const k of MAP_KEYS) for (const [key, [n, w]] of Object.entries(src[k] || {})) bump(target[k], key, false, n, w);
   for (const [opp, m] of Object.entries(src.vs || {})) {
     const t = target.vs[opp] || (target.vs[opp] = emptyMatchup());
     t.games += m.games || 0;
     t.wins += m.wins || 0;
+    if (m.lane) bump(t, 'lane', false, m.lane[0], m.lane[1]);
     for (const k of VS_KEYS) for (const [key, [n, w]] of Object.entries(m[k] || {})) bump(t[k], key, false, n, w);
   }
 }
@@ -216,6 +231,7 @@ class BuildDB {
       const s = C[r.role] || (C[r.role] = emptyRole());
       s.games++;
       if (r.win) s.wins++;
+      if (r.laneWin != null) bump(s, 'lane', r.laneWin);
       bump(s.runes, r.runes, r.win);
       bump(s.spells, r.spells, r.win);
       bump(s.start, r.start, r.win);
@@ -230,6 +246,7 @@ class BuildDB {
         const m = s.vs[r.vs] || (s.vs[r.vs] = emptyMatchup());
         m.games++;
         if (r.win) m.wins++;
+        if (r.laneWin != null) bump(m, 'lane', r.laneWin);
         bump(m.runes, r.runes, r.win);
         bump(m.spells, r.spells, r.win);
         bump(m.start, r.start, r.win);
@@ -249,8 +266,8 @@ class BuildDB {
     return [...all].filter((p) => p !== 'unknown').sort(comparePatch).reverse().slice(0, n);
   }
 
-  statsFor(championId, role) {
-    const patches = this.recentPatches();
+  statsFor(championId, role, nPatches = 2) {
+    const patches = this.recentPatches(nPatches);
     const acc = emptyRole();
     for (const src of [this.data, this.remote]) {
       if (!src) continue;
@@ -260,6 +277,27 @@ class BuildDB {
       }
     }
     return { stats: acc, patches };
+  }
+
+  // Alle champions in 'n rol met hul algehele wen- en lane-syfers (vir 'n "beste keuses"-lys)
+  roleTable(role, nPatches = 2) {
+    const patches = this.recentPatches(nPatches);
+    const out = {};
+    for (const src of [this.data, this.remote]) {
+      if (!src) continue;
+      for (const p of patches) {
+        const champs = (src.patches && src.patches[p] && src.patches[p].champs) || {};
+        for (const [id, C] of Object.entries(champs)) {
+          const s = C[role];
+          if (!s) continue;
+          const o = out[id] || (out[id] = { championId: Number(id), games: 0, wins: 0, laneGames: 0, laneWins: 0 });
+          o.games += s.games || 0;
+          o.wins += s.wins || 0;
+          if (s.lane) { o.laneGames += s.lane[0]; o.laneWins += s.lane[1]; }
+        }
+      }
+    }
+    return Object.values(out);
   }
 
   rolesFor(championId) {
@@ -326,6 +364,7 @@ function recommend(s, vsId) {
   const rec = {
     games: s.games,
     wins: s.wins,
+    lane: s.lane || null,
     runes: top(s.runes, 3).map((e) => ({ ...e, page: parseRuneKey(e.key) })),
     spells: top(s.spells, 2).map((e) => ({ ...e, ids: nums(e.key) })),
     start: top(s.start, 2).map((e) => ({ ...e, ids: nums(e.key) })),
@@ -343,7 +382,7 @@ function recommend(s, vsId) {
   // Matchup-build: gebruik die keuses teen hierdie spesifieke teenstander waar daar genoeg data is
   const m = vsId && s.vs ? s.vs[vsId] : null;
   if (m) {
-    rec.vs = { championId: Number(vsId), games: m.games, wins: m.wins };
+    rec.vs = { championId: Number(vsId), games: m.games, wins: m.wins, lane: m.lane || null };
     if (m.games >= MATCHUP_MIN) {
       const use = (key, list) => {
         if (list.length && list[0].n >= SECTION_MIN) { rec[key] = list; rec.fromMatchup.push(key); }
@@ -364,14 +403,42 @@ function recommend(s, vsId) {
 function matchups(s, minGames = 5) {
   return Object.entries(s.vs || {})
     .filter(([, m]) => m.games >= minGames)
-    .map(([id, m]) => ({ championId: Number(id), games: m.games, wins: m.wins, wr: m.wins / m.games }));
+    .map(([id, m]) => ({
+      championId: Number(id), games: m.games, wins: m.wins, wr: m.wins / m.games,
+      laneGames: m.lane ? m.lane[0] : 0, laneWins: m.lane ? m.lane[1] : 0,
+    }));
 }
 
-// Watter champions wen die meeste teen 'n vyand in 'n rol (counter-picks)
+// Wenkoers getrek na 50% as daar min games is, sodat 3 uit 3 nie bo 'n bewese 58% oor 200 games eindig nie
+const SMOOTH = 10;
+const smoothed = (wins, games) => (wins + SMOOTH / 2) / (games + SMOOTH);
+
+// Watter champions wen die meeste teen 'n vyand in 'n rol (counter-picks), met game- en lane-wenkoers
 function counterPicks(enemyStats, minGames = 5, k = 8) {
   return matchups(enemyStats, minGames)
-    .map((x) => ({ championId: x.championId, games: x.games, wins: x.games - x.wins, wr: 1 - x.wr }))
-    .sort((a, b) => b.wr - a.wr || b.games - a.games)
+    .map((x) => {
+      const wins = x.games - x.wins;
+      const laneWins = x.laneGames - x.laneWins;
+      return {
+        championId: x.championId, games: x.games, wins, wr: wins / x.games, score: smoothed(wins, x.games),
+        laneGames: x.laneGames, laneWr: x.laneGames ? laneWins / x.laneGames : null,
+        laneScore: x.laneGames ? smoothed(laneWins, x.laneGames) : null,
+      };
+    })
+    .sort((a, b) => b.score - a.score || b.games - a.games)
+    .slice(0, k);
+}
+
+// Sterkste champions in 'n rol oor die algemeen (as daar nog te min data teen 'n spesifieke vyand is)
+function bestInRole(table, minGames = 20, k = 10, exclude = []) {
+  return table
+    .filter((x) => x.games >= minGames && !exclude.includes(x.championId))
+    .map((x) => ({
+      championId: x.championId, games: x.games, wins: x.wins, wr: x.wins / x.games, score: smoothed(x.wins, x.games),
+      laneGames: x.laneGames, laneWr: x.laneGames ? x.laneWins / x.laneGames : null,
+      laneScore: x.laneGames ? smoothed(x.laneWins, x.laneGames) : null,
+    }))
+    .sort((a, b) => b.score - a.score || b.games - a.games)
     .slice(0, k);
 }
 
@@ -522,5 +589,5 @@ class Crawler {
 module.exports = {
   ROLES, PLATFORM_ROUTE, itemsFromDDragon, itemClassifier, analyzeMatch, patchOf, comparePatch,
   runeKey, parseRuneKey, maxOrder, BuildDB, SeenSet, Crawler, recommend, buildPath,
-  matchups, counterPicks, guessRoles, MATCHUP_MIN,
+  matchups, counterPicks, bestInRole, guessRoles, MATCHUP_MIN, KEEP_PATCHES,
 };
