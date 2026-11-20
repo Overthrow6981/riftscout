@@ -42,6 +42,7 @@ npm install
 npm start          # desktop app (Electron)
 npm run server     # web version only at http://localhost:3000
 npm run collect -- --region na1 --minutes 30   # collect build data (needs RIOT_API_KEY)
+npm test           # automated tests (build data, server security and error handling)
 ```
 
 ### Releasing an update

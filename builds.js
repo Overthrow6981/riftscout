@@ -416,8 +416,8 @@ function matchups(s, minGames = 5) {
     }));
 }
 
-// Wenkoers getrek na 50% as daar min games is, sodat 3 uit 3 nie bo 'n bewese 58% oor 200 games eindig nie
-const SMOOTH = 10;
+// Wenkoers getrek na 50% as daar min games is, sodat 'n paar gelukkige games nie bo 'n bewese wenkoers eindig nie
+const SMOOTH = 20; // soos 20 ekstra games op 50%: 3 uit 3 kom nie bo 60 uit 100 nie
 const smoothed = (wins, games) => (wins + SMOOTH / 2) / (games + SMOOTH);
 
 // Watter champions wen die meeste teen 'n vyand in 'n rol (counter-picks), met game- en lane-wenkoers

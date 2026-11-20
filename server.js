@@ -20,6 +20,8 @@ const REMOTE_BUILDS_URL = process.env.REMOTE_BUILDS_URL || 'https://github.com/O
 const CRAWL_PACE_MS = process.env.CRAWL_PACE_MS != null ? Number(process.env.CRAWL_PACE_MS) : 1700;
 const APP_VERSION = require('./package.json').version;
 const MIN_GAMES = 10;
+const RIOT_TIMEOUT_MS = Number(process.env.RIOT_TIMEOUT_MS) || 15000;
+const DDRAGON_TIMEOUT_MS = Number(process.env.DDRAGON_TIMEOUT_MS) || 20000;
 
 // Word in startServer() gestel: waar instellings en cache gestoor word
 let DATA_DIR = __dirname;
@@ -99,8 +101,9 @@ async function riot(route, apiPath, attempt = 0) {
   const url = HOST_TEMPLATE.replace('{route}', route) + apiPath;
   let res;
   try {
-    res = await fetch(url, { headers: { 'X-Riot-Token': API_KEY } });
+    res = await fetch(url, { headers: { 'X-Riot-Token': API_KEY }, signal: AbortSignal.timeout(RIOT_TIMEOUT_MS) });
   } catch (err) {
+    if (err.name === 'TimeoutError') throw httpError(504, 'The Riot API is not responding right now. Try again in a minute.');
     throw httpError(502, 'Could not reach the Riot API: ' + err.message);
   }
   if (res.status === 429 && attempt < 3) {
@@ -141,6 +144,11 @@ async function cached(key, ttlMs, fn) {
   const v = await fn();
   memCache.set(key, { t: Date.now(), v });
   return v;
+}
+// Ou inskrywings opruim sodat die geheue nie oor lang sessies bly groei nie (langste TTL is 1 uur)
+function pruneMemCache(maxAgeMs = 2 * 3600e3) {
+  const now = Date.now();
+  for (const [k, e] of memCache) if (now - e.t > maxAgeMs) memCache.delete(k);
 }
 
 // Wedstryde verander nooit nie -> stoor permanent op skyf
@@ -307,13 +315,19 @@ let DD = null;        // laaste suksesvolle Data Dragon data
 let itemCls = null;   // item-klassifiseerder vir build-data
 async function getDDragon() {
   return cached('ddragon', 60 * 60 * 1000, async () => {
-    const versions = await (await fetch(`${DDRAGON}/api/versions.json`)).json();
+    // Met 'n tydsbeperking: 'n hangende Data Dragon mag nie die hele app laat wag nie
+    const getJson = async (url) => {
+      const r = await fetch(url, { signal: AbortSignal.timeout(DDRAGON_TIMEOUT_MS) });
+      if (!r.ok) throw new Error(`Data Dragon ${r.status}`);
+      return r.json();
+    };
+    const versions = await getJson(`${DDRAGON}/api/versions.json`);
     const v = versions[0];
     const [spellsRaw, runesRaw, champsRaw, itemsRaw] = await Promise.all([
-      fetch(`${DDRAGON}/cdn/${v}/data/en_US/summoner.json`).then((r) => r.json()),
-      fetch(`${DDRAGON}/cdn/${v}/data/en_US/runesReforged.json`).then((r) => r.json()),
-      fetch(`${DDRAGON}/cdn/${v}/data/en_US/champion.json`).then((r) => r.json()),
-      fetch(`${DDRAGON}/cdn/${v}/data/en_US/item.json`).then((r) => r.json()),
+      getJson(`${DDRAGON}/cdn/${v}/data/en_US/summoner.json`),
+      getJson(`${DDRAGON}/cdn/${v}/data/en_US/runesReforged.json`),
+      getJson(`${DDRAGON}/cdn/${v}/data/en_US/champion.json`),
+      getJson(`${DDRAGON}/cdn/${v}/data/en_US/item.json`),
     ]);
     const spells = {};
     for (const s of Object.values(spellsRaw.data)) spells[s.key] = { name: s.name, image: s.image.full };
@@ -572,7 +586,8 @@ async function lcuTick() {
     // Sleutel sluit die teenstander in: as die vyand later kies, word die matchup-build ingevoer
     const key = `${champKey}:${cs.vs || ''}`;
     if (key === lastAutoKey) return;
-    const what = new Set(['runes', 'items']);
+    // Sonder lanes (ARAM, Arena) wys die Summoner's Rift item set nie in die winkel nie: dan net runes
+    const what = new Set(cs.role ? ['runes', 'items'] : ['runes']);
     // Spells een keer per champion (nie weer as net die teenstander verander nie), en net met lanes (nie ARAM nie)
     if (prefs.autoSpells && cs.role && lastSpellKey !== champKey) what.add('spells');
     const result = await doImport(cs.championId, cs.role, what, cs, cs.vs);
@@ -837,7 +852,9 @@ async function overlayData() {
   const d = live.data || {};
   const ap = d.activePlayer || {};
   const myName = ap.riotIdGameName || ap.summonerName || String(ap.riotId || '').split('#')[0];
-  const me = (d.allPlayers || []).find((p) => (p.riotIdGameName || p.summonerName) === myName) || null;
+  // Eers op die volle Riot ID (Naam#TAG) – twee spelers kan dieselfde naam met 'n ander tag hê
+  const me = (ap.riotId && (d.allPlayers || []).find((p) => p.riotId === ap.riotId))
+    || (d.allPlayers || []).find((p) => (p.riotIdGameName || p.summonerName) === myName) || null;
   const dd = await getDDragon().catch(() => DD);
   const raw = me ? String(me.rawChampionName || '') : '';
   const ddId = raw.startsWith('game_character_displayname_') ? raw.slice(27) : '';
@@ -1124,12 +1141,25 @@ app.post('/api/lcu/import', wrap(async (req, res) => {
   requireJson(req);
   const championId = Number(req.body.championId);
   if (!Number.isInteger(championId) || championId <= 0) throw httpError(400, 'Invalid champion.');
-  const what = new Set((req.body.what || []).filter((w) => ['runes', 'items', 'spells'].includes(w)));
+  const what = new Set((Array.isArray(req.body.what) ? req.body.what : []).filter((w) => ['runes', 'items', 'spells'].includes(w)));
+  if (!what.size) throw httpError(400, 'Choose what to import: runes, items and/or spells.');
   const role = builds.ROLES.includes(req.body.role) ? req.body.role : '';
   const vs = Number(req.body.vs) || null;
   lastImport = await doImport(championId, role, what, lcuState.champSelect, vs);
   res.json(lastImport);
 }));
+
+// Onbekende API-roetes en foute (bv. stukkende JSON) as kort JSON – nooit 'n stack trace nie
+app.use('/api', (req, res) => res.status(404).json({ error: 'Not found.' }));
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  const status = err.status || err.statusCode || 500;
+  const msg = err.type === 'entity.parse.failed' ? 'Invalid JSON.'
+    : err.type === 'entity.too.large' ? 'Request too large.'
+      : status < 500 ? (err.expose && err.message) || 'Bad request.' : 'Something went wrong.';
+  if (status >= 500) console.error(err);
+  res.status(status).json({ error: msg });
+});
 
 // ---------- Begin ----------
 function startServer({ port = 3000, dataDir = __dirname } = {}) {
@@ -1158,6 +1188,7 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
     loadRemoteBuilds();
     setInterval(loadRemoteBuilds, 3600 * 1000).unref(); // elke uur: nuwe gedeelde data kom vinnig by almal uit
     setInterval(lcuTick, 2000).unref();
+    setInterval(pruneMemCache, 15 * 60e3).unref();
     updateCrawler();
   }
 

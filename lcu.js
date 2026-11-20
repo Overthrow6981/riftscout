@@ -12,6 +12,7 @@ const POSITIONS = { top: 'TOP', jungle: 'JUNGLE', middle: 'MIDDLE', bottom: 'BOT
 
 let creds = null;
 let lastLookup = 0;
+let lastProcessLookup = 0;
 
 function readLockfile(file) {
   try {
@@ -53,7 +54,8 @@ async function findCreds() {
   if (process.env.LCU_LOCKFILE) return (creds = readLockfile(process.env.LCU_LOCKFILE));
   let c = null;
   for (const dir of installDirs()) { c = readLockfile(path.join(dir, 'lockfile')); if (c) break; }
-  if (!c) c = await fromProcess();
+  // PowerShell kos 'n bietjie CPU: as League toe is, hoogstens elke 30 s
+  if (!c && Date.now() - lastProcessLookup >= 30000) { lastProcessLookup = Date.now(); c = await fromProcess(); }
   return (creds = c);
 }
 
@@ -159,7 +161,12 @@ async function importRunes(rune, name, replaceCurrent) {
       if (ok(r)) return { ok: true, replaced: target.name };
     }
   }
-  return { ok: false, error: 'No free rune page. Delete one in the client, or turn on "Replace a rune page when all are full" in Settings.' };
+  return {
+    ok: false,
+    error: replaceCurrent
+      ? 'All your rune pages are full and none of them can be replaced. Delete one in the League client.'
+      : 'No free rune page. Delete one in the client, or turn on "Replace a rune page when all are full" in Settings.',
+  };
 }
 
 async function importItemSet(championId, title, blocks) {
