@@ -15,6 +15,10 @@ on:
         description: 'How many minutes to collect (the first run can be short so data arrives quickly)'
         required: false
         default: '200'
+      region:
+        description: 'Server to collect high-elo games from (euw1, na1, kr, ...)'
+        required: false
+        default: 'euw1'
 
 permissions:
   contents: write
@@ -56,7 +60,7 @@ jobs:
         if: steps.key.outputs.ok == 'true'
         env:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
-        run: node tools/collect.js --region na1 --minutes "${{ github.event.inputs.minutes || '200' }}" --file builds.json --seen builds-seen.json
+        run: node tools/collect.js --region "${{ github.event.inputs.region || 'euw1' }}" --minutes "${{ github.event.inputs.minutes || '200' }}" --file builds.json --seen builds-seen.json
 
       - name: Publish data
         if: steps.key.outputs.ok == 'true' && always()
