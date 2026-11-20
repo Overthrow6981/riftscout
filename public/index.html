@@ -11,7 +11,7 @@
     <div class="brand"><span class="logo">◆</span> RiftScout</div>
     <nav class="tabs">
       <button class="tab active" data-tab="profile">Profile</button>
-      <button class="tab" data-tab="builds">Builds</button>
+      <button class="tab" data-tab="builds"><span id="buildsLabel">Builds</span> <span id="csDot" class="dot"></span></button>
       <button class="tab" data-tab="lobby">Lobby <span id="lobbyDot" class="dot"></span></button>
       <button class="tab" data-tab="live">Live Game <span id="liveDot" class="dot"></span></button>
     </nav>
@@ -44,8 +44,10 @@
           <option value="sg2">SEA</option><option value="tw2">TW</option><option value="vn2">VN</option>
         </select>
       </label>
-      <label class="check"><input type="checkbox" id="prefAuto" /> Import runes and item set automatically when I lock in a champion</label>
-      <label class="check"><input type="checkbox" id="prefReplace" /> Replace my current rune page if there is no free page</label>
+      <label class="check"><input type="checkbox" id="prefOpenCs" /> Bring RiftScout to the front when champ select starts</label>
+      <label class="check"><input type="checkbox" id="prefAuto" /> Import runes and item set automatically as soon as I pick a champion</label>
+      <label class="check"><input type="checkbox" id="prefSpells" /> Also set summoner spells automatically</label>
+      <label class="check"><input type="checkbox" id="prefReplace" /> Replace a rune page when all my pages are full</label>
 
       <h3 class="set-h">In-game overlay</h3>
       <label class="check"><input type="checkbox" id="prefOverlay" /> Show the overlay during games (use Borderless or Windowed mode)</label>

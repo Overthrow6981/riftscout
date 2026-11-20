@@ -457,7 +457,9 @@ async function openSettings() {
     $('prefCollect').checked = p.collectBuilds;
     $('prefRegion').value = p.crawlRegion;
     $('prefAuto').checked = p.autoImport;
-    $('prefReplace').checked = p.replaceRunePage;
+    $('prefSpells').checked = p.autoSpells;
+    $('prefOpenCs').checked = p.openOnChampSelect;
+    $('prefReplace').checked = p.replacePages;
     $('prefOverlay').checked = p.overlay;
     $('prefPos').value = p.overlayPosition;
   } catch { /* gebruik wat daar is */ }
@@ -487,7 +489,9 @@ $('settingsSave').addEventListener('click', async () => {
       collectBuilds: $('prefCollect').checked,
       crawlRegion: $('prefRegion').value,
       autoImport: $('prefAuto').checked,
-      replaceRunePage: $('prefReplace').checked,
+      autoSpells: $('prefSpells').checked,
+      openOnChampSelect: $('prefOpenCs').checked,
+      replacePages: $('prefReplace').checked,
       overlay: $('prefOverlay').checked,
       overlayPosition: $('prefPos').value,
     });
@@ -747,7 +751,7 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? 'imported ✓' : v.error}`);
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}` : v.error}`);
   if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
   return parts.join(' · ');
 }
@@ -887,13 +891,20 @@ async function pollLcu() {
   if (was !== lcuConnected && buildData) renderBuild();
   const cs = st.phase === 'ChampSelect' ? st.champSelect : null;
   lastCs = cs;
+  // Tydens champ select word die Builds-oortjie "Champ Select" (met 'n groen kolletjie)
+  $('buildsLabel').textContent = st.phase === 'ChampSelect' ? 'Champ Select' : 'Builds';
+  $('csDot').classList.toggle('on', st.phase === 'ChampSelect');
+  if (st.phase === 'ChampSelect' && !lastCsKey) {
+    document.querySelector('.tab[data-tab="builds"]').click();
+    window.scrollTo(0, 0);
+  }
   renderCsPanel(cs);
   const banner = $('csBanner');
   if (!cs || !cs.championId) {
     banner.classList.toggle('hidden', !(st.phase === 'ChampSelect'));
     if (st.phase !== 'ChampSelect') { lastCsKey = ''; banner.textContent = ''; return; }
     let html = 'Champ select – pick a champion and RiftScout loads its runes and build.';
-    if (cs && cs.vs && cs.role) html = `Champ select · your lane: ${esc(champName(cs.vs))} – best picks against them are in the Builds tab.`;
+    if (cs && cs.vs && cs.role) html = `Champ select · your lane: ${esc(champName(cs.vs))} – the best picks against them are below.`;
     banner.innerHTML = html;
     if (cs && st.phase === 'ChampSelect' && !lastCsKey) { lastCsKey = 'panel'; document.querySelector('.tab[data-tab="builds"]').click(); }
     return;
@@ -908,7 +919,8 @@ async function pollLcu() {
   let text = `Champ select · ${c.name}${cs.role ? ' · ' + (ROLE_NAMES[cs.role] || '') : ''}${cs.vs ? ` vs ${champName(cs.vs)}` : ''}`;
   const li = st.lastImport;
   if (li && li.championId === cs.championId) text += ' — ' + (li.source === 'riot' ? "Riot's recommended runes · " : '') + importText(li);
-  else if (!cs.locked) text += ' — lock in to import runes and items';
+  else if (st.autoImport) text += ` — putting runes, items${cs.role && st.autoSpells ? ' and spells' : ''} into League…`;
+  else text += ' — click Import to put the runes into League';
   banner.textContent = text;
   banner.classList.remove('hidden');
   if (li && li.at && li.at !== lastImportAt) lastImportAt = li.at;
