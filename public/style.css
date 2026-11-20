@@ -295,3 +295,39 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
   .build-grid { grid-template-columns: 1fr; }
   .mu-grid { grid-template-columns: 1fr; }
 }
+
+/* Lobby-scouting */
+.teams.one { grid-template-columns: 1fr; max-width: 560px; }
+.pc { display: flex; gap: 12px; align-items: flex-start; padding: 10px; border-radius: 10px; border: 1px solid transparent; margin-bottom: 6px; background: var(--panel2); }
+.pc .c { width: 48px; height: 48px; border-radius: 10px; flex: none; }
+.pc .c.empty { background: var(--line); }
+.pc.me { border-color: var(--win); }
+.pc.opp { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+.pc.hidden-name { opacity: .75; }
+.pi { min-width: 0; flex: 1; }
+.pn { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pn a { color: var(--text); text-decoration: none; }
+.pn a:hover { text-decoration: underline; }
+.pn small { color: var(--muted); font-weight: 500; margin-left: 4px; }
+.pr { font-size: 13px; margin-top: 2px; }
+.pr .good { color: #4ade80; }
+.pr .bad { color: #f87171; }
+.ps { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.tags { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.pill { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; background: var(--line); color: var(--text); white-space: nowrap; }
+.pill.hot { background: rgba(249, 115, 22, .18); color: #fb923c; }
+.pill.otp { background: rgba(168, 85, 247, .18); color: #c084fc; }
+.pill.new { background: rgba(234, 179, 8, .16); color: #facc15; }
+.pill.smurf { background: rgba(229, 72, 77, .18); color: #ff8a8d; }
+.pill.you { background: var(--win-bg); color: var(--win); }
+.pill.lane { background: rgba(232, 182, 76, .16); color: var(--gold); }
+.tier { font-weight: 800; }
+.t-iron, .t-bronze { color: #b08d7a; }
+.t-silver { color: #b7c3cf; }
+.t-gold { color: #e8b64c; }
+.t-platinum { color: #4fd1c5; }
+.t-emerald { color: #34d399; }
+.t-diamond { color: #7aa2ff; }
+.t-master { color: #c084fc; }
+.t-grandmaster { color: #f87171; }
+.t-challenger { color: #fde68a; }

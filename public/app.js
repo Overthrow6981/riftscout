@@ -316,6 +316,85 @@ function renderLive(data) {
     ${events ? `<div class="card"><h3>Recent events</h3><ul class="events">${events}</ul></div>` : ''}`;
 }
 
+// ---------- Lobby-scouting ----------
+const TAG_CLASS = { 'Hot streak': 'hot', 'One-trick': 'otp', 'First time on champ': 'new', 'New on champ': 'new', 'Possible smurf': 'smurf' };
+let lastLobbyKey = '';
+let lobbyRegion = 'na1';
+
+function rankHtml(p) {
+  const r = p.solo || p.flex;
+  if (!r) return '<span class="tier">Unranked</span>';
+  const tier = r.tier.charAt(0) + r.tier.slice(1).toLowerCase();
+  const div = ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(r.tier) ? '' : ' ' + r.rank;
+  const g = r.wins + r.losses;
+  return `<span class="tier t-${r.tier.toLowerCase()}">${tier}${div}</span> ${r.lp} LP${p.solo ? '' : ' (Flex)'}
+    · ${r.wins}W ${r.losses}L${g ? ` · <b class="${r.wins / g >= 0.5 ? 'good' : 'bad'}">${pct(r.wins / g)}</b>` : ''}`;
+}
+
+function lobbyCard(p) {
+  const c = dd.champions[p.championId];
+  const img = c ? `<img class="c" src="${champImg(c.id)}" alt="${esc(c.name)}" title="${esc(c.name)}">` : '<div class="c empty"></div>';
+  const role = p.role ? `<small>${esc(ROLE_NAMES[p.role] || p.role)}</small>` : '';
+  if (p.hidden) {
+    return `<div class="pc hidden-name">${img}<div class="pi"><div class="pn">Hidden player ${role}</div>
+      <div class="ps">Riot hides names in ranked champ select — full scouting starts on the loading screen.</div></div></div>`;
+  }
+  const mastery = p.mastery ? (p.mastery.points ? `${c ? esc(c.name) + ' ' : ''}mastery ${(p.mastery.points / 1000).toFixed(p.mastery.points < 10000 ? 1 : 0)}k` : `Never played ${c ? esc(c.name) : 'this champ'}`) : '';
+  const tags = (p.tags || []).map((t) => `<span class="pill ${TAG_CLASS[t] || ''}">${esc(t)}</span>`).join('');
+  return `<div class="pc ${p.me ? 'me' : ''} ${p.opp ? 'opp' : ''}">${img}
+    <div class="pi">
+      <div class="pn"><a href="#" data-riot="${esc(p.riotId)}">${esc(p.riotId || 'Unknown')}</a> ${role}${p.me ? ' <span class="pill you">You</span>' : ''}${p.opp ? ' <span class="pill lane">Your lane</span>' : ''}</div>
+      <div class="pr">${rankHtml(p)}</div>
+      <div class="ps">${p.level != null ? `Level ${p.level}` : ''}${mastery ? ' · ' + mastery : ''}</div>
+      ${tags ? `<div class="tags">${tags}</div>` : ''}
+    </div></div>`;
+}
+
+const ROLE_ORDER = { TOP: 0, JUNGLE: 1, MIDDLE: 2, BOTTOM: 3, UTILITY: 4 };
+function renderLobby(l) {
+  lobbyRegion = l.region || lobbyRegion;
+  const teams = l.teams || [];
+  if (!teams.length) {
+    $('lobby').innerHTML = `<div class="notice">${l.error ? esc(l.error) : l.waiting
+      ? 'Game found — waiting for Riot to list the players (usually a few seconds into the loading screen)…'
+      : 'No lobby right now. In champ select you see your team here; from the loading screen on, all 10 players with rank, win rate and mastery on their champion.'}</div>`;
+    return;
+  }
+  const head = l.phase === 'ChampSelect'
+    ? `<div class="notice">Champ select · your team${l.hiddenNames ? ' — names are hidden by Riot in this queue, so only you are scouted until the game loads.' : ''}</div>`
+    : l.stale ? '<div class="notice">Your last game\'s lobby.</div>' : '';
+  const team = (t) => {
+    const ps = [...t.players].sort((a, b) => (ROLE_ORDER[a.role] ?? 9) - (ROLE_ORDER[b.role] ?? 9));
+    const label = l.phase === 'ChampSelect' ? 'Your team' : (t.mine ? 'Your team' : 'Enemy team');
+    return `<div class="card team"><h3 class="${t.teamId === 100 ? 'blue' : 'red'}">${label}</h3>${ps.map(lobbyCard).join('')}</div>`;
+  };
+  $('lobby').innerHTML = head + `<div class="teams ${teams.length === 1 ? 'one' : ''}">${teams.map(team).join('')}</div>
+    <p class="hint">Tags: <b>One-trick</b> 300k+ mastery · <b>New on champ</b> under 10k · <b>Possible smurf</b> low level with a very high win rate. Ranked stats are Solo/Duo (or Flex when they have no Solo rank).</p>`;
+}
+
+$('lobby').addEventListener('click', (e) => {
+  const a = e.target.closest('a[data-riot]');
+  if (!a || !a.dataset.riot) return;
+  e.preventDefault();
+  $('region').value = lobbyRegion;
+  $('riotId').value = a.dataset.riot;
+  document.querySelector('.tab[data-tab="profile"]').click();
+  search(lobbyRegion, a.dataset.riot);
+});
+
+async function pollLobby() {
+  let l;
+  try { l = await api('/api/lobby'); } catch (err) { l = { teams: [], error: err.message }; }
+  const active = (l.teams || []).length > 0 && !l.stale;
+  $('lobbyDot').classList.toggle('on', active);
+  renderLobby(l);
+  // Spring een keer per spel na die Lobby-oortjie sodra die laaiskerm begin
+  if (l.phase === 'InGame' && !l.stale) {
+    const key = String(l.gameId || l.at);
+    if (key !== lastLobbyKey) { lastLobbyKey = key; document.querySelector('.tab[data-tab="lobby"]').click(); }
+  }
+}
+
 // ---------- Instellings ----------
 let hasKey = false;
 async function openSettings() {
@@ -660,4 +739,6 @@ async function pollLcu() {
   setInterval(pollLcu, 2000);
   pollLive();
   setInterval(pollLive, 3000);
+  pollLobby();
+  setInterval(pollLobby, 4000);
 })();

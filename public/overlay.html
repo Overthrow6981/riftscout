@@ -41,6 +41,8 @@
     .vs b { color: #fff; }
     .vs .good { color: #4ade80; }
     .vs .bad { color: #ff8a8e; }
+    .scout { margin-top: 3px; color: #b5bac8; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .scout b { color: #facc15; }
   </style>
 </head>
 <body>
@@ -70,7 +72,8 @@
         </div>
         ${d.vs ? `<div class="vs"><span>vs</span><img src="${img('champion', d.vs.id)}" alt=""><b>${esc(d.vs.name)}</b>
           ${d.vs.games >= 5 ? `<span class="${d.vs.wins / d.vs.games >= 0.5 ? 'good' : 'bad'}">${Math.round((d.vs.wins / d.vs.games) * 100)}% win</span><span>(${d.vs.games})</span>` : ''}
-          ${d.vs.specific ? '<span>· matchup build</span>' : ''}</div>` : ''}
+          ${d.vs.specific ? '<span>· matchup build</span>' : ''}</div>
+          ${d.vs.scout ? `<div class="scout">${esc(d.vs.scout.rank)}${d.vs.scout.wr != null ? ` · ${Math.round(d.vs.scout.wr * 100)}% (${d.vs.scout.games})` : ''}${d.vs.scout.mastery != null ? ` · ${d.vs.scout.mastery ? Math.round(d.vs.scout.mastery / 1000) + 'k mastery' : 'first time'}` : ''}${['Possible smurf', 'One-trick', 'Hot streak'].filter((t) => (d.vs.scout.tags || []).includes(t)).map((t) => ` · <b>${t === 'Possible smurf' ? 'smurf?' : t}</b>`).join('')}</div>` : ''}` : ''}
         <div class="st">
           <span><b>${k}/${de}/${a}</b> KDA</span>
           <span><b>${d.csPerMin.toFixed(1)}</b> CS/min</span>

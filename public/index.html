@@ -12,6 +12,7 @@
     <nav class="tabs">
       <button class="tab active" data-tab="profile">Profile</button>
       <button class="tab" data-tab="builds">Builds</button>
+      <button class="tab" data-tab="lobby">Lobby <span id="lobbyDot" class="dot"></span></button>
       <button class="tab" data-tab="live">Live Game <span id="liveDot" class="dot"></span></button>
     </nav>
     <button id="settingsBtn" class="settings-btn" title="Settings">⚙ Settings</button>
@@ -110,6 +111,10 @@
     </section>
 
     <!-- LIVE -->
+    <section id="tab-lobby" class="tabpane">
+      <div id="lobby"><div class="notice">Checking for a lobby…</div></div>
+    </section>
+
     <section id="tab-live" class="tabpane">
       <div id="live"><div class="notice">Checking for a live game…</div></div>
     </section>
