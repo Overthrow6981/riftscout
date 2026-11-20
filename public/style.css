@@ -349,3 +349,24 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .update-bar button:disabled { opacity: .6; cursor: default; }
 .ub-track { flex: 1; max-width: 320px; height: 6px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; }
 .ub-fill { display: block; height: 100%; background: #7aa2ff; transition: width .4s; }
+
+/* Champ select: vyandige picks en beste picks */
+.cs-panel { margin-bottom: 14px; }
+.cs-panel h3 { margin: 12px 0 8px; }
+.cs-panel h3 small { color: var(--muted); font-weight: 500; text-transform: none; letter-spacing: 0; }
+.ep-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.ep-label { color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; margin-right: 4px; }
+.ep { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 3px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); font-size: 13px; }
+.ep img { width: 26px; height: 26px; border-radius: 50%; }
+.ep small { color: var(--muted); margin-left: 5px; }
+.ep.lane { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+ol.counters { list-style: none; margin: 0; padding: 0; counter-reset: c; display: grid; gap: 4px; }
+ol.counters li { counter-increment: c; display: grid; grid-template-columns: 22px 30px minmax(90px, 160px) 1fr 52px 80px; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--panel2); cursor: pointer; }
+ol.counters li:hover { background: var(--line); }
+ol.counters li::before { content: counter(c); color: var(--muted); font-weight: 700; text-align: right; }
+ol.counters img { width: 30px; height: 30px; border-radius: 6px; }
+ol.counters .cn { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+ol.counters .cbar { height: 6px; border-radius: 99px; background: rgba(255,255,255,.08); overflow: hidden; }
+ol.counters .cbar span { display: block; height: 100%; background: #4ade80; }
+ol.counters b.good { color: #4ade80; }
+ol.counters b.bad { color: #f87171; }

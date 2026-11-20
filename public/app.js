@@ -375,6 +375,10 @@ function lobbyCard(p) {
   const c = dd.champions[p.championId];
   const img = c ? `<img class="c" src="${champImg(c.id)}" alt="${esc(c.name)}" title="${esc(c.name)}">` : '<div class="c empty"></div>';
   const role = p.role ? `<small>${esc(ROLE_NAMES[p.role] || p.role)}</small>` : '';
+  if (p.enemyPick) {
+    return `<div class="pc ${p.opp ? 'opp' : ''}">${img}<div class="pi"><div class="pn">${esc(c ? c.name : 'Champion')} ${role}${p.opp ? ' <span class="pill lane">Your lane</span>' : ''}</div>
+      <div class="ps">Riot shows enemy names from the loading screen on – full scouting starts there.</div></div></div>`;
+  }
   if (p.hidden) {
     return `<div class="pc hidden-name">${img}<div class="pi"><div class="pn">Hidden player ${role}</div>
       <div class="ps">Riot hides names in ranked champ select — full scouting starts on the loading screen.</div></div></div>`;
@@ -401,11 +405,11 @@ function renderLobby(l) {
     return;
   }
   const head = l.phase === 'ChampSelect'
-    ? `<div class="notice">Champ select · your team${l.hiddenNames ? ' — names are hidden by Riot in this queue, so only you are scouted until the game loads.' : ''}</div>`
+    ? `<div class="notice">Champ select${l.hiddenNames ? ' — your teammates\' names are hidden by Riot in this queue, so only you are scouted until the game loads.' : ' — the enemy team\'s names show from the loading screen on.'}</div>`
     : l.stale ? '<div class="notice">Your last game\'s lobby.</div>' : '';
   const team = (t) => {
     const ps = [...t.players].sort((a, b) => (ROLE_ORDER[a.role] ?? 9) - (ROLE_ORDER[b.role] ?? 9));
-    const label = l.phase === 'ChampSelect' ? 'Your team' : (t.mine ? 'Your team' : 'Enemy team');
+    const label = t.mine ? 'Your team' : (l.phase === 'ChampSelect' ? 'Enemy picks' : 'Enemy team');
     return `<div class="card team"><h3 class="${t.teamId === 100 ? 'blue' : 'red'}">${label}</h3>${ps.map(lobbyCard).join('')}</div>`;
   };
   $('lobby').innerHTML = head + `<div class="teams ${teams.length === 1 ? 'one' : ''}">${teams.map(team).join('')}</div>
@@ -549,7 +553,7 @@ async function openBuild(champKey, role, strict, vs) {
 function runeImgTag(id, cls = '') {
   return dd.runes[id] ? `<img class="${cls}" src="${runeImg(id)}" alt="" title="${esc(dd.runes[id].name)}">` : '';
 }
-function runePageHtml(e, games, main) {
+function runePageHtml(e, games, main, noStats) {
   const p = e.page;
   const rn = (id) => (dd.runes[id] ? esc(dd.runes[id].name) : `#${id}`);
   return `<div class="rune-page ${main ? 'main' : ''}">
@@ -563,7 +567,7 @@ function runePageHtml(e, games, main) {
       ${p.secondary.map((id) => `<div class="rr">${runeImgTag(id)}<span>${rn(id)}</span></div>`).join('')}
       <div class="shards">${p.shards.map((id) => `<span class="shard">${esc(SHARDS[id] || id)}</span>`).join('')}</div>
     </div>
-    <div class="rp-stats"><b>${wr(e)}</b> win rate<br>${pct(e.n / games)} pick rate · ${e.n} games</div>
+    ${noStats ? '' : `<div class="rp-stats"><b>${wr(e)}</b> win rate<br>${pct(e.n / games)} pick rate · ${e.n} games</div>`}
   </div>`;
 }
 
@@ -574,13 +578,15 @@ function renderBuild() {
   const enough = r && r.games >= b.minGames;
   const roles = b.roles.map((x) => `<button class="role ${x.role === b.role ? 'active' : ''}" data-role="${x.role}">
       ${ROLE_NAMES[x.role] || x.role} <small>${x.games}</small></button>`).join('');
-  const dis = lcuConnected && enough ? '' : 'disabled';
-  const tip = !enough ? 'Not enough data yet' : lcuConnected ? '' : 'Open the League client to import';
+  const riot = !enough ? b.riot : null;
+  const dis = lcuConnected && (enough || riot) ? '' : 'disabled';
+  const disSpells = lcuConnected && (enough || (riot && riot.spells.length === 2)) ? '' : 'disabled';
+  const tip = !lcuConnected ? 'Open the League client to import' : !enough && !riot ? 'Not enough data yet' : '';
   const head = `<div class="card build-head">
       <img class="bh-icon" src="${champImg(c.id)}" alt="">
       <div class="bh-main">
         <div class="bh-name">${esc(c.name)} <span>${esc(ROLE_NAMES[b.role] || '')}</span></div>
-        <div class="sub">${enough ? `${r.games} games · ${pct(r.wins / r.games)} win rate · patch ${esc(b.patches.join(' + '))}` : 'Collecting data…'}</div>
+        <div class="sub">${enough ? `${r.games} games · ${pct(r.wins / r.games)} win rate · patch ${esc(b.patches.join(' + '))}` : riot ? "Riot's recommended setup from the League client" : 'No RiftScout stats for this champion yet'}</div>
         <div class="roles">${roles}</div>
         ${b.opponents.length ? `<div class="vs-pick">vs <select id="vsSelect">
           <option value="">any opponent</option>
@@ -591,16 +597,25 @@ function renderBuild() {
           ${r.fromMatchup.length ? ' · <span class="mtag">matchup build</span>' : ` · general build (matchup build from ${b.matchupMin} games)`}</div>` : ''}
       </div>
       <div class="bh-actions" title="${esc(tip)}">
-        <button class="imp" data-what="runes,items" ${dis}>Import runes + items</button>
-        <button class="imp ghost" data-what="spells" ${dis}>Set spells</button>
+        <button class="imp" data-what="runes,items" ${dis}>${riot ? 'Import runes' : 'Import runes + items'}</button>
+        <button class="imp ghost" data-what="spells" ${disSpells}>Set spells</button>
       </div>
     </div>
     <div id="importMsg" class="hint"></div>`;
+  if (!enough && riot) {
+    $('buildView').innerHTML = head + `<div class="notice">RiftScout's own win-rate stats for ${esc(c.name)} aren't in yet, so this is
+      <b>Riot's recommended setup</b> straight from your League client – it imports instantly. Items: use the recommended items in the game's shop.</div>
+      <div class="build-grid">
+        <div class="card"><h3>Runes <span class="mtag">Riot recommended</span></h3>${runePageHtml({ page: riot }, 0, true, true)}</div>
+        <div class="card"><h3>Summoner spells</h3>${riot.spells.length ? `<div class="spellrow">${riot.spells.map((sp) =>
+          `<img src="${spellImg(sp)}" alt="" title="${esc(dd.spells[sp] ? dd.spells[sp].name : '')}">`).join('')}</div>` : '<div class="sub">—</div>'}</div>
+      </div>`;
+    return;
+  }
   if (!enough) {
     const g = r ? r.games : 0;
     $('buildView').innerHTML = head + `<div class="notice">Not enough games for ${esc(c.name)}${b.role ? ' ' + esc(ROLE_NAMES[b.role]) : ''} yet
-      (${g} of ${b.minGames}). RiftScout collects high-elo matches in the background while the app is open – check back soon.
-      Popular champions fill up first.</div>`;
+      (${g} of ${b.minGames}). ${lcuConnected ? '' : "Open the League client to see Riot's recommended runes for this champion right away."}</div>`;
     return;
   }
   const tag = (k) => (r.fromMatchup.includes(k) ? ` <span class="mtag">vs ${esc(champName(r.vs.championId))}</span>` : '');
@@ -706,21 +721,50 @@ async function pollBuildStatus() {
 let lastCsKey = '';
 let lastImportAt = 0;
 let counterKey = '';
-let counterHtml = '';
+let counterData = null;
 async function loadCounters(enemyId, role) {
   const key = `${enemyId}:${role}`;
-  if (key === counterKey) return counterHtml;
+  if (key === counterKey) return counterData;
   counterKey = key;
-  counterHtml = '';
-  try {
-    const c = await api(`/api/builds/counters/${enemyId}?role=${role}`);
-    if (c.counters.length) {
-      counterHtml = ` — counter picks vs ${esc(champName(enemyId))}: ` + c.counters.slice(0, 5).map((x) =>
-        `<span class="cp"><img src="${champIcon(x.championId)}" alt="">${esc(champName(x.championId))} <b>${pct(x.wr)}</b></span>`).join('');
-    }
-  } catch { /* geen counters nie */ }
-  return counterHtml;
+  counterData = null;
+  try { counterData = await api(`/api/builds/counters/${enemyId}?role=${role}`); } catch { counterData = { counters: [] }; }
+  return counterData;
 }
+
+let csPanelHtml = '';
+async function renderCsPanel(cs) {
+  const panel = $('csPanel');
+  if (!cs) { panel.classList.add('hidden'); csPanelHtml = ''; return; }
+  const er = cs.enemyRoles || {};
+  const enemies = (cs.enemies || []).map((id) => `<span class="ep ${id === cs.vs ? 'lane' : ''}" title="${esc(champName(id))}">
+      <img src="${champIcon(id)}" alt=""><span>${esc(champName(id))}<small>${esc(ROLE_NAMES[er[id]] || '')}</small></span></span>`).join('');
+  let body;
+  if (!cs.role) {
+    body = '<div class="sub">No lanes in this mode – counter picks are for Summoner\'s Rift draft and ranked.</div>';
+  } else if (!cs.vs) {
+    body = `<div class="sub">Waiting for the enemy ${esc(ROLE_NAMES[cs.role] || '')} to pick…</div>`;
+  } else {
+    const c = await loadCounters(cs.vs, cs.role);
+    const list = (c && c.counters) || [];
+    body = `<h3>Best picks vs ${esc(champName(cs.vs))} <small>${esc(ROLE_NAMES[cs.role] || '')}</small></h3>` + (list.length
+      ? `<ol class="counters">${list.map((x) => `<li data-champ="${x.championId}">
+          <img src="${champIcon(x.championId)}" alt=""><span class="cn">${esc(champName(x.championId))}</span>
+          <span class="cbar"><span style="width:${Math.round(x.wr * 100)}%"></span></span>
+          <b class="${x.wr >= 0.5 ? 'good' : 'bad'}">${pct(x.wr)}</b><span class="sub">${x.games} games</span></li>`).join('')}</ol>
+          <div class="sub">Click a champion for its runes and build against ${esc(champName(cs.vs))}.</div>`
+      : `<div class="sub">No matchup win rates vs ${esc(champName(cs.vs))} yet – they come from RiftScout's shared match data.
+          Your runes still import from Riot's recommendations when you lock in.</div>`);
+  }
+  const html = `<div class="ep-row"><span class="ep-label">Enemy picks</span>${enemies || '<span class="sub">none yet</span>'}</div>${body}`;
+  if (html !== csPanelHtml) { csPanelHtml = html; panel.innerHTML = html; }
+  panel.classList.remove('hidden');
+}
+$('csPanel').addEventListener('click', (e) => {
+  const li = e.target.closest('li[data-champ]');
+  if (!li || !lastCs) return;
+  openBuild(Number(li.dataset.champ), lastCs.role, false, lastCs.vs || null);
+});
+let lastCs = null;
 
 async function pollLcu() {
   let st;
@@ -729,13 +773,16 @@ async function pollLcu() {
   lcuConnected = !!st.connected;
   if (was !== lcuConnected && buildData) renderBuild();
   const cs = st.phase === 'ChampSelect' ? st.champSelect : null;
+  lastCs = cs;
+  renderCsPanel(cs);
   const banner = $('csBanner');
   if (!cs || !cs.championId) {
     banner.classList.toggle('hidden', !(st.phase === 'ChampSelect'));
     if (st.phase !== 'ChampSelect') { lastCsKey = ''; banner.textContent = ''; return; }
-    let html = 'Champ select – pick a champion and RiftScout will load its build.';
-    if (cs && cs.vs && cs.role) html = `Champ select · enemy ${esc(ROLE_NAMES[cs.role] || '')}: ${esc(champName(cs.vs))}` + await loadCounters(cs.vs, cs.role);
+    let html = 'Champ select – pick a champion and RiftScout loads its runes and build.';
+    if (cs && cs.vs && cs.role) html = `Champ select · your lane: ${esc(champName(cs.vs))} – best picks against them are in the Builds tab.`;
     banner.innerHTML = html;
+    if (cs && st.phase === 'ChampSelect' && !lastCsKey) { lastCsKey = 'panel'; document.querySelector('.tab[data-tab="builds"]').click(); }
     return;
   }
   const c = dd.champions[cs.championId] || { name: 'Champion' };
@@ -747,7 +794,7 @@ async function pollLcu() {
   }
   let text = `Champ select · ${c.name}${cs.role ? ' · ' + (ROLE_NAMES[cs.role] || '') : ''}${cs.vs ? ` vs ${champName(cs.vs)}` : ''}`;
   const li = st.lastImport;
-  if (li && li.championId === cs.championId) text += ' — ' + importText(li);
+  if (li && li.championId === cs.championId) text += ' — ' + (li.source === 'riot' ? "Riot's recommended runes · " : '') + importText(li);
   else if (!cs.locked) text += ' — lock in to import runes and items';
   banner.textContent = text;
   banner.classList.remove('hidden');
