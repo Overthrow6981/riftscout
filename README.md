@@ -1,13 +1,13 @@
 # RiftScout
 
-A League of Legends companion app for Windows – like Blitz, but simple:
+A League of Legends companion app for Windows – like Blitz, but simple. **No API key needed:** RiftScout reads your profile, match history and lobby from the League client on your PC.
 
 - **Builds & runes** for every champion and role, calculated from Challenger, Grandmaster and Master ranked games: rune page, summoner spells, skill order, starting items, boots, core build and 4th–6th item options, with win and pick rates.
 - **Matchups:** builds, runes, spells and skill order *against your lane opponent*, matchup win rates, "strong against" / "weak against" lists and counter picks.
 - **Champ select auto-import:** lock in a champion and RiftScout detects your lane opponent and puts the matchup rune page and item set straight into your League client (spells with one click). If the enemy picks after you, the matchup build is imported automatically.
 - **Lobby scouting:** from the loading screen on, all 10 players with rank, win rate, level and mastery on the champion they picked, plus tags like *One-trick*, *First time on champ*, *Hot streak* and *Possible smurf*. Your lane opponent is highlighted and their scouting line also shows in the overlay. In champ select you see your own team (Riot hides names in ranked champ select, and RiftScout respects that).
 - **In-game overlay:** your lane opponent and matchup win rate, next item to buy, "Level up" reminder, KDA, CS/min and gold on top of the game (Borderless or Windowed mode; Ctrl+Shift+O hides it).
-- **Profiles & match history:** rank, LP, mastery and recent games for any Riot ID.
+- **Profiles & match history:** rank, LP, mastery and recent games for any player on your server (any server with an optional Riot API key).
 - **Knows who you are:** with the League client open, RiftScout picks up your Riot ID and server by itself and opens your profile — no typing. It remembers them for when League is closed.
 - **Live game view** of both teams.
 
@@ -21,9 +21,10 @@ The app updates itself: when a new version is released it downloads in the backg
 
 ## First start
 
-1. Get a free key at [developer.riotgames.com](https://developer.riotgames.com) (sign in → Development API Key).
-2. Open RiftScout → **⚙ Settings** → paste the key → Save. (Development keys expire every 24 hours.)
-3. Keep RiftScout open: it collects high-elo games in the background and the **Builds** tab fills up. Popular champions are ready first.
+1. Install and open RiftScout.
+2. Open the League client. RiftScout picks up your Riot ID and server and shows your profile – nothing to type, no key.
+
+**Optional:** a Riot API key (Settings) lets you search players on other servers and collect extra build data on your own PC.
 
 ## Shared build data (for the repo owner)
 

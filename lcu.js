@@ -211,4 +211,92 @@ async function identity() {
   };
 }
 
-module.exports = { state, importRunes, importItemSet, setSpells, identity };
+// ---------- Spelerdata uit die kliënt (geen Riot API-sleutel nodig nie) ----------
+// Die kliënt kan net spelers op jou eie bediener opsoek.
+const EMPTY_PUUID = '00000000-0000-0000-0000-000000000000';
+const okPuuid = (p) => typeof p === 'string' && p.length > 20 && p !== EMPTY_PUUID;
+
+async function get(p) {
+  const r = await request('GET', p);
+  if (r.status === 0) { const e = new Error('The League client is not open.'); e.status = 503; e.lcuClosed = true; throw e; }
+  if (!ok(r)) { const e = new Error((r.data && r.data.message) || `League client error ${r.status}`); e.status = r.status === 404 ? 404 : 502; throw e; }
+  return r.data;
+}
+
+async function lookupRiotId(gameName, tagLine) {
+  const r = await request('POST', '/lol-summoner/v1/summoners/aliases', [{ gameName, tagLine }]);
+  if (r.status === 0) { const e = new Error('The League client is not open.'); e.status = 503; e.lcuClosed = true; throw e; }
+  let s = ok(r) && Array.isArray(r.data) ? r.data.find((x) => x && okPuuid(x.puuid)) : null;
+  if (!s) {
+    const g = await request('GET', `/lol-summoner/v1/summoners?name=${encodeURIComponent(`${gameName}#${tagLine}`)}`);
+    if (ok(g) && g.data && okPuuid(g.data.puuid)) s = g.data;
+  }
+  return s || null;
+}
+
+const summonerByPuuid = (puuid) => get(`/lol-summoner/v2/summoners/puuid/${encodeURIComponent(puuid)}`);
+
+// Rank in dieselfde vorm as Riot se league-v4 (queueType, tier, rank, leaguePoints, wins, losses)
+async function ranked(puuid) {
+  const d = await get(`/lol-ranked/v1/ranked-stats/${encodeURIComponent(puuid)}`);
+  const map = (d && d.queueMap) || {};
+  const list = Array.isArray(d && d.queues) ? d.queues : [];
+  const out = [];
+  for (const q of ['RANKED_SOLO_5x5', 'RANKED_FLEX_SR']) {
+    const e = map[q] || list.find((x) => x && x.queueType === q);
+    if (!e || !e.tier || e.tier === 'NONE' || e.tier === 'UNRANKED') continue;
+    const apex = ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(e.tier);
+    out.push({
+      queueType: q, tier: e.tier, rank: apex || !e.division || e.division === 'NA' ? 'I' : e.division,
+      leaguePoints: e.leaguePoints || 0, wins: e.wins || 0, losses: e.losses || 0, hotStreak: false,
+    });
+  }
+  return out;
+}
+
+async function masteries(puuid) {
+  const d = await get(`/lol-champion-mastery/v1/${encodeURIComponent(puuid)}/champion-mastery`);
+  const list = Array.isArray(d) ? d : (d && Array.isArray(d.masteries) ? d.masteries : []);
+  return list.map((m) => ({ championId: m.championId, level: m.championLevel || 0, points: m.championPoints || 0 }))
+    .sort((a, b) => b.points - a.points);
+}
+
+async function matchList(puuid, begIndex, endIndex) {
+  const d = await get(`/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches?begIndex=${begIndex}&endIndex=${endIndex}`);
+  return (d && d.games && Array.isArray(d.games.games)) ? d.games.games : [];
+}
+
+const game = (gameId) => get(`/lol-match-history/v1/games/${Number(gameId)}`);
+
+// Wie is in jou huidige spel (vanaf die laaiskerm)
+async function gameSession() {
+  const r = await request('GET', '/lol-gameflow/v1/session');
+  if (!ok(r) || !r.data || !r.data.gameData) return null;
+  const gd = r.data.gameData;
+  const picks = {};
+  const spells = {};
+  for (const p of gd.playerChampionSelections || []) {
+    if (!okPuuid(p.puuid)) continue;
+    picks[p.puuid] = p.championId;
+    if (p.spell1Id || p.spell2Id) spells[p.puuid] = [p.spell1Id || 0, p.spell2Id || 0];
+  }
+  const team = (list, teamId) => (list || []).filter((m) => okPuuid(m.puuid)).map((m) => ({
+    puuid: m.puuid,
+    championId: m.championId || picks[m.puuid] || 0,
+    teamId,
+    position: POSITIONS[String(m.selectedPosition || '').toLowerCase()] || '',
+    spells: spells[m.puuid] || null,
+  }));
+  return {
+    gameId: gd.gameId || null,
+    queueId: gd.queue ? gd.queue.id : null,
+    mapId: r.data.map ? r.data.map.id : null,
+    isCustom: !!gd.isCustomGame,
+    players: [...team(gd.teamOne, 100), ...team(gd.teamTwo, 200)],
+  };
+}
+
+module.exports = {
+  state, importRunes, importItemSet, setSpells, identity,
+  lookupRiotId, summonerByPuuid, ranked, masteries, matchList, game, gameSession, okPuuid,
+};
