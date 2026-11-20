@@ -386,6 +386,7 @@ async function lcuTick() {
     const st = await lcu.state();
     if (st.champSelect) st.champSelect.vs = enemyLaner(st.champSelect.enemies || [], st.champSelect.role);
     lcuState = st;
+    if (API_KEY && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
     if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; return; }
     const cs = lcuState.champSelect;
     if (!cs || !cs.championId || !cs.locked || !getPrefs().autoImport) return;
@@ -399,6 +400,172 @@ async function lcuTick() {
     lcuBusy = false;
   }
 }
+
+// ---------- Lobby-scouting ----------
+// Champ select: spanmaats (as Riot hul name wys). Van die laaiskerm af: al 10 spelers via spectator-v5.
+let lobby = { key: '', data: null };
+let lobbyPromise = null;
+let me = { puuid: null, riotId: null, region: null, at: 0 };
+
+async function whoAmI() {
+  if (me.puuid && Date.now() - me.at < 10 * 60e3) return me;
+  const id = await lcu.identity().catch(() => null);
+  me = {
+    puuid: id ? id.puuid : null,
+    riotId: id ? id.riotId : null,
+    region: id && PLATFORMS[id.platform] ? id.platform : crawlRegion(),
+    at: Date.now(),
+  };
+  return me;
+}
+
+const roleMapOf = (championId) => Object.fromEntries(db.rolesFor(championId).map((r) => [r.role, r.games]));
+
+async function scoutPlayer(region, p) {
+  lastUserActivity = Date.now(); // die versamelaar wag terwyl ons scout
+  const base = await cached(`scout:${region}:${p.puuid}`, 10 * 60e3, async () => {
+    const [entries, summoner] = await Promise.allSettled([
+      riot(region, `/lol/league/v4/entries/by-puuid/${p.puuid}`),
+      riot(region, `/lol/summoner/v4/summoners/by-puuid/${p.puuid}`),
+    ]);
+    if (entries.status === 'rejected' && [401, 403].includes(entries.reason.status)) throw entries.reason;
+    const list = entries.status === 'fulfilled' ? entries.value : [];
+    const pick = (q) => {
+      const e = list.find((x) => x.queueType === q);
+      return e ? { tier: e.tier, rank: e.rank, lp: e.leaguePoints, wins: e.wins, losses: e.losses, hotStreak: !!e.hotStreak } : null;
+    };
+    return { solo: pick('RANKED_SOLO_5x5'), flex: pick('RANKED_FLEX_SR'), level: summoner.status === 'fulfilled' ? summoner.value.summonerLevel : null };
+  });
+  let mastery = null;
+  if (p.championId) {
+    mastery = await cached(`mastery:${region}:${p.puuid}:${p.championId}`, 10 * 60e3, async () => {
+      try {
+        const m = await riot(region, `/lol/champion-mastery/v4/champion-masteries/by-puuid/${p.puuid}/by-champion/${p.championId}`);
+        return { level: m.championLevel, points: m.championPoints };
+      } catch (err) {
+        if (err.status === 404) return { level: 0, points: 0 }; // nog nooit gespeel nie
+        throw err;
+      }
+    }).catch(() => null);
+  }
+  const r = base.solo || base.flex;
+  const games = r ? r.wins + r.losses : 0;
+  const wr = games ? r.wins / games : 0;
+  const tags = [];
+  if (r && r.hotStreak) tags.push('Hot streak');
+  if (mastery && mastery.points === 0) tags.push('First time on champ');
+  else if (mastery && mastery.points < 10000) tags.push('New on champ');
+  else if (mastery && mastery.points >= 300000) tags.push('One-trick');
+  if (base.level != null && base.level < 60 && games >= 15 && wr >= 0.65) tags.push('Possible smurf');
+  return { ...p, level: base.level, solo: base.solo, flex: base.flex, mastery, tags };
+}
+
+function championIdFromLive(p, dd) {
+  const raw = String((p && p.rawChampionName) || '');
+  const ddId = raw.startsWith('game_character_displayname_') ? raw.slice(27) : '';
+  if (dd) for (const [key, c] of Object.entries(dd.champions)) if (c.id === ddId) return Number(key);
+  return 0;
+}
+
+async function computeLobby() {
+  const phase = lcuState.phase;
+  if (!API_KEY) return { phase, teams: [], error: 'Add a Riot API key in Settings to scout the players in your games.' };
+  const id = await whoAmI();
+  const region = id.region;
+
+  // --- Champ select: my span ---
+  if (phase === 'ChampSelect' && lcuState.champSelect) {
+    const allies = lcuState.champSelect.allies || [];
+    const key = 'cs:' + allies.map((a) => `${a.puuid}:${a.championId}`).join(',');
+    if (lobby.key === key && lobby.data) return lobby.data;
+    const players = await Promise.all(allies.map((a) => (a.puuid
+      ? scoutPlayer(region, { puuid: a.puuid, riotId: a.gameName ? `${a.gameName}#${a.tagLine}` : '', championId: a.championId, teamId: 100, role: a.role, me: a.me })
+      : { hidden: true, championId: a.championId, teamId: 100, role: a.role, me: a.me, tags: [] })));
+    const data = { phase: 'ChampSelect', region, myTeamId: 100, teams: [{ teamId: 100, mine: true, players }], hiddenNames: allies.some((a) => !a.puuid && !a.me), at: Date.now() };
+    lobby = { key, data };
+    return data;
+  }
+
+  // --- In die spel (vanaf die laaiskerm) ---
+  const live = await getLiveData();
+  if (!['GameStart', 'InProgress', 'Reconnect'].includes(phase) && !live.inGame) {
+    // Nie in 'n spel nie: wys die laaste lobby (bv. ná die spel) as dit daar is
+    if (id.puuid) memCache.delete(`spectate:${id.puuid}`);
+    return lobby.data && lobby.data.phase === 'InGame' ? { ...lobby.data, phase, stale: true } : { phase, teams: [] };
+  }
+  const dd = await getDDragon().catch(() => DD);
+  let game = null;
+  if (id.puuid) {
+    // 404 = Riot ken die spel (nog) nie (bv. laaiskerm): probeer elke 10s weer; 'n gevonde spel word 60s onthou
+    const k = `spectate:${id.puuid}`;
+    const hit = memCache.get(k);
+    if (hit && Date.now() - hit.t < (hit.v ? 60e3 : 10e3)) game = hit.v;
+    else {
+      try { game = await riot(region, `/lol/spectator/v5/active-games/by-summoner/${id.puuid}`); }
+      catch (err) { if (![404, 400].includes(err.status)) throw err; game = null; }
+      memCache.set(k, { t: Date.now(), v: game });
+    }
+  }
+  let participants = [];
+  if (game) {
+    participants = (game.participants || []).filter((p) => !p.bot && p.puuid)
+      .map((p) => ({ puuid: p.puuid, riotId: p.riotId || '', championId: p.championId, teamId: p.teamId }));
+  } else if (live.inGame) {
+    // Bv. custom games: spectator ken dit nie; gebruik die spel se eie lys en soek die spelers op
+    for (const p of live.data.allPlayers || []) {
+      if (p.isBot) continue;
+      const riotId = p.riotId || (p.riotIdGameName ? `${p.riotIdGameName}#${p.riotIdTagLine}` : '');
+      const hash = riotId.lastIndexOf('#');
+      if (hash < 1) continue;
+      try {
+        const acc = await cached(`acct:${riotId.toLowerCase()}`, 60 * 60e3, () => riot(accountRoute(region),
+          `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(riotId.slice(0, hash))}/${encodeURIComponent(riotId.slice(hash + 1))}`));
+        participants.push({ puuid: acc.puuid, riotId, championId: championIdFromLive(p, dd), teamId: p.team === 'CHAOS' ? 200 : 100 });
+      } catch { /* speler nie gevind nie */ }
+    }
+  }
+  if (!participants.length) return { phase, teams: [], waiting: true };
+  const key = 'game:' + (game ? game.gameId : participants.map((p) => p.riotId).join(','));
+  if (lobby.key === key && lobby.data) return lobby.data;
+
+  const liveMe = live.inGame && live.data.activePlayer ? String(live.data.activePlayer.riotId || '').toLowerCase() : '';
+  const players = await Promise.all(participants.map((p) => scoutPlayer(region, {
+    ...p, me: (!!id.puuid && p.puuid === id.puuid) || (!!liveMe && p.riotId.toLowerCase() === liveMe),
+  })));
+  // Rolle: die spel se eie posisies waar beskikbaar, anders geraai uit wat elke champion gewoonlik speel
+  const livePos = {};
+  if (live.inGame) for (const p of live.data.allPlayers || []) if (p.position) livePos[championIdFromLive(p, dd)] = p.position;
+  const teamIds = [...new Set(players.map((p) => p.teamId))].sort((a, b) => a - b);
+  // Rolle maak net sin op Summoner's Rift met spanne van 5 (nie ARAM/Arena nie)
+  const laned = game ? ![450, 1700, 1710, 2400].includes(game.gameQueueConfigId) && game.mapId !== 12 && game.mapId !== 30 : true;
+  for (const teamId of teamIds) {
+    const team = players.filter((p) => p.teamId === teamId);
+    if (!laned || team.length > 5) { for (const p of team) p.role = ''; continue; }
+    const guess = builds.guessRoles(team.map((p) => ({ championId: p.championId, roles: roleMapOf(p.championId) })));
+    for (const p of team) p.role = builds.ROLES.includes(livePos[p.championId]) ? livePos[p.championId] : (guess[p.championId] || '');
+  }
+  const mine = players.find((p) => p.me);
+  const myTeamId = mine ? mine.teamId : 100;
+  if (mine && mine.role) for (const p of players) if (p.teamId !== myTeamId && p.role === mine.role) p.opp = true;
+  const data = {
+    phase: 'InGame', region, gameId: game ? game.gameId : null, queueId: game ? game.gameQueueConfigId : null, myTeamId,
+    teams: teamIds.sort((a, b) => (a === myTeamId ? -1 : b === myTeamId ? 1 : a - b)).map((t) => ({ teamId: t, mine: t === myTeamId, players: players.filter((p) => p.teamId === t) })),
+    at: Date.now(),
+  };
+  lobby = { key, data };
+  return data;
+}
+
+async function getLobby() {
+  if (!lobbyPromise) lobbyPromise = computeLobby().finally(() => { lobbyPromise = null; });
+  return lobbyPromise;
+}
+
+const tierText = (r) => {
+  if (!r) return 'Unranked';
+  const t = r.tier.charAt(0) + r.tier.slice(1).toLowerCase();
+  return ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(r.tier) ? t : `${t} ${r.rank}`;
+};
 
 // ---------- Oorleg: alles wat die oorleg in die spel nodig het ----------
 const LIVE_POSITIONS = { TOP: 'TOP', JUNGLE: 'JUNGLE', MIDDLE: 'MIDDLE', BOTTOM: 'BOTTOM', UTILITY: 'UTILITY' };
@@ -462,6 +629,17 @@ async function overlayData() {
     maxOrder: rec && rec.maxOrder[0] ? rec.maxOrder[0].key : null,
     games: rec ? rec.games : 0,
     vs: vsId && dd && dd.champions[vsId] ? {
+      scout: (() => {
+        const enemy = lobby.data && lobby.data.phase === 'InGame'
+          ? lobby.data.teams.flatMap((t) => t.players).find((p) => p.championId === vsId && p.teamId !== lobby.data.myTeamId) : null;
+        if (!enemy) return null;
+        const r = enemy.solo || enemy.flex;
+        const g = r ? r.wins + r.losses : 0;
+        return {
+          rank: tierText(r), wr: g ? r.wins / g : null, games: g,
+          mastery: enemy.mastery ? enemy.mastery.points : null, tags: enemy.tags,
+        };
+      })(),
       id: dd.champions[vsId].id,
       name: dd.champions[vsId].name,
       games: rec && rec.vs ? rec.vs.games : 0,
@@ -588,6 +766,7 @@ app.get('/api/matches', wrap(async (req, res) => {
 }));
 
 app.get('/api/live', wrap(async (req, res) => res.json(await getLiveData())));
+app.get('/api/lobby', wrap(async (req, res) => res.json(await getLobby())));
 app.get('/api/overlay', wrap(async (req, res) => res.json(await overlayData())));
 
 app.get('/api/ddragon', wrap(async (req, res) => {

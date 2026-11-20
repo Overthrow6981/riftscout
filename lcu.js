@@ -101,6 +101,20 @@ async function state() {
           spell2Id: me.spell2Id || 0,
           // Vyande se champions (sigbaar sodra hulle gekies is)
           enemies: (s.data.theirTeam || []).map((x) => x.championId).filter((id) => id > 0),
+          // Spanmaats vir lobby-scouting (in ranked kan Riot name/puuid versteek)
+          // Riot se reëls: versteekte name (ranked) word NIE ontmasker nie
+          allies: (s.data.myTeam || []).map((x) => {
+            const hidden = x.nameVisibilityType === 'HIDDEN' && x.cellId !== s.data.localPlayerCellId;
+            return {
+            cellId: x.cellId,
+            puuid: hidden ? '' : (x.puuid || ''),
+            gameName: hidden ? '' : (x.gameName || ''),
+            tagLine: hidden ? '' : (x.tagLine || ''),
+            championId: x.championId || x.championPickIntent || 0,
+            role: POSITIONS[x.assignedPosition] || '',
+            me: x.cellId === s.data.localPlayerCellId,
+            };
+          }),
         };
       }
     }
@@ -165,4 +179,18 @@ async function setSpells(spell1Id, spell2Id) {
   return ok(r) ? { ok: true } : { ok: false, error: 'Could not set summoner spells.' };
 }
 
-module.exports = { state, importRunes, importItemSet, setSpells };
+// Wie is ingeteken, en op watter bediener (bv. "na1")
+async function identity() {
+  const [me, plat] = await Promise.all([
+    request('GET', '/lol-summoner/v1/current-summoner'),
+    request('GET', '/lol-platform-config/v1/namespaces/LoginDataPacket/platformId'),
+  ]);
+  if (me.status !== 200 || !me.data) return null;
+  return {
+    puuid: me.data.puuid || null,
+    riotId: me.data.gameName ? `${me.data.gameName}#${me.data.tagLine}` : null,
+    platform: plat.status === 200 && typeof plat.data === 'string' ? plat.data.toLowerCase() : null,
+  };
+}
+
+module.exports = { state, importRunes, importItemSet, setSpells, identity };

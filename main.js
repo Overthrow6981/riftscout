@@ -7,7 +7,7 @@ const { autoUpdater } = require('electron-updater');
 const { startServer, getLiveData, getPrefs, saveBuildData } = require('./server');
 
 const OVERLAY_W = 300;
-const OVERLAY_H = 280;
+const OVERLAY_H = 300;
 
 let win = null;
 let overlay = null;
