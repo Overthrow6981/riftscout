@@ -150,12 +150,12 @@ function renderProfile(p) {
   const ranks = Object.keys(order).map((q) => {
     const e = p.ranked.find((r) => r.queueType === q);
     if (!e) return `<div class="rank"><div class="q">${order[q]}</div><div class="tier">Unranked</div></div>`;
-    const games = e.wins + e.losses;
+    const games = e.losses == null ? 0 : e.wins + e.losses;
     const tier = e.tier.charAt(0) + e.tier.slice(1).toLowerCase();
     const showDiv = !['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(e.tier);
     return `<div class="rank"><div class="q">${order[q]}</div>
       <div class="tier">${tier}${showDiv ? ' ' + e.rank : ''} · ${e.leaguePoints} LP</div>
-      <div class="wl">${e.wins}W ${e.losses}L · ${games ? pct(e.wins / games) : '–'} win rate${e.hotStreak ? ' · 🔥 streak' : ''}</div></div>`;
+      <div class="wl">${e.losses == null ? `${e.wins} wins` : `${e.wins}W ${e.losses}L · ${games ? pct(e.wins / games) : '–'} win rate`}${e.hotStreak ? ' · 🔥 streak' : ''}</div></div>`;
   }).join('');
   const mastery = p.mastery.map((m) => {
     const c = dd.champions[m.championId];
@@ -366,6 +366,7 @@ function rankHtml(p) {
   if (!r) return '<span class="tier">Unranked</span>';
   const tier = r.tier.charAt(0) + r.tier.slice(1).toLowerCase();
   const div = ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(r.tier) ? '' : ' ' + r.rank;
+  if (r.losses == null) return `<span class="tier t-${r.tier.toLowerCase()}">${tier}${div}</span> ${r.lp} LP${p.solo ? '' : ' (Flex)'} · ${r.wins} wins`;
   const g = r.wins + r.losses;
   return `<span class="tier t-${r.tier.toLowerCase()}">${tier}${div}</span> ${r.lp} LP${p.solo ? '' : ' (Flex)'}
     · ${r.wins}W ${r.losses}L${g ? ` · <b class="${r.wins / g >= 0.5 ? 'good' : 'bad'}">${pct(r.wins / g)}</b>` : ''}`;
@@ -380,8 +381,11 @@ function lobbyCard(p) {
       <div class="ps">Riot shows enemy names from the loading screen on – full scouting starts there.</div></div></div>`;
   }
   if (p.hidden) {
-    return `<div class="pc hidden-name">${img}<div class="pi"><div class="pn">Hidden player ${role}</div>
-      <div class="ps">Riot hides names in ranked champ select — full scouting starts on the loading screen.</div></div></div>`;
+    const why = p.teamId === 200 || p.position !== undefined
+      ? 'This player hides their name (e.g. streamer mode), so they can\'t be scouted.'
+      : 'Riot hides names in ranked champ select — full scouting starts on the loading screen.';
+    return `<div class="pc hidden-name ${p.opp ? 'opp' : ''}">${img}<div class="pi"><div class="pn">Hidden player ${role}${p.opp ? ' <span class="pill lane">Your lane</span>' : ''}</div>
+      <div class="ps">${why}</div></div></div>`;
   }
   const mastery = p.mastery ? (p.mastery.points ? `${c ? esc(c.name) + ' ' : ''}mastery ${(p.mastery.points / 1000).toFixed(p.mastery.points < 10000 ? 1 : 0)}k` : `Never played ${c ? esc(c.name) : 'this champ'}`) : '';
   const tags = (p.tags || []).map((t) => `<span class="pill ${TAG_CLASS[t] || ''}">${esc(t)}</span>`).join('');
@@ -413,7 +417,7 @@ function renderLobby(l) {
     return `<div class="card team"><h3 class="${t.teamId === 100 ? 'blue' : 'red'}">${label}</h3>${ps.map(lobbyCard).join('')}</div>`;
   };
   $('lobby').innerHTML = head + `<div class="teams ${teams.length === 1 ? 'one' : ''}">${teams.map(team).join('')}</div>
-    <p class="hint">Tags: <b>One-trick</b> 300k+ mastery · <b>New on champ</b> under 10k · <b>Possible smurf</b> low level with a very high win rate. Ranked stats are Solo/Duo (or Flex when they have no Solo rank).</p>`;
+    <p class="hint">Tags: <b>One-trick</b> 300k+ mastery · <b>New on champ</b> under 10k · <b>Possible smurf</b> low level with a very high win rate. Ranked stats are Solo/Duo (or Flex when they have no Solo rank). The League client only shares other players' wins, not their losses.</p>`;
 }
 
 $('lobby').addEventListener('click', (e) => {
