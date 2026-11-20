@@ -426,7 +426,7 @@ function buildFor(championId, role, strict, vs) {
 // Counter-picks teen 'n vyand in 'n rol: game- en lane-wenkoers van elke champion teen hom.
 // As daar nog te min matchup-games is, ook die sterkste champions in die rol oor die algemeen.
 const COUNTER_MIN = 3;
-function countersFor(enemyId, role) {
+function countersFor(enemyId, role, mineId) {
   const roles = db.rolesFor(enemyId);
   const use = role || (roles[0] ? roles[0].role : '') || (riotPositions.map[enemyId] || [])[0] || '';
   if (!use) return { enemyId, role: '', counters: [], best: [] };
@@ -434,7 +434,15 @@ function countersFor(enemyId, role) {
   const counters = builds.counterPicks(enemy, COUNTER_MIN, 20);
   const best = counters.length >= 5 ? [] : builds.bestInRole(db.roleTable(use, builds.KEEP_PATCHES), 20, 10,
     [enemyId, ...counters.map((c) => c.championId)]);
-  return { enemyId, role: use, enemyGames: enemy.games, minGames: COUNTER_MIN, counters, best };
+  // Hoe vaar jou eie champion teen hierdie vyand (die vyand se syfers omgekeer)
+  let mine = null;
+  if (mineId && mineId !== enemyId) {
+    const m = (enemy.vs || {})[mineId];
+    mine = m && m.games
+      ? { championId: mineId, games: m.games, wins: m.games - m.wins, wr: 1 - m.wins / m.games, laneGames: m.lane ? m.lane[0] : 0, laneWr: m.lane && m.lane[0] ? 1 - m.lane[1] / m.lane[0] : null }
+      : { championId: mineId, games: 0 };
+  }
+  return { enemyId, role: use, enemyGames: enemy.games, minGames: COUNTER_MIN, counters, best, mine };
 }
 
 // Riot se eie lys van watter posisies elke champion speel (uit die League-kliënt) – werk sonder build-data
@@ -450,18 +458,27 @@ const TAG_PRIOR = {
   Marksman: { BOTTOM: 6 }, Support: { UTILITY: 6 }, Mage: { MIDDLE: 3, UTILITY: 1 },
   Assassin: { MIDDLE: 3, JUNGLE: 1 }, Fighter: { TOP: 3, JUNGLE: 1 }, Tank: { TOP: 2, UTILITY: 1, JUNGLE: 1 },
 };
+const RIOT_PRIOR_GAMES = 40; // Riot se posisies tel soos 40 games; met baie eie data wen ons data
 function rolePrior(championId) {
   const data = Object.fromEntries(db.rolesFor(championId).map((r) => [r.role, r.games]));
-  if (Object.values(data).reduce((x, y) => x + y, 0) >= 20) return data;
+  const total = Object.values(data).reduce((x, y) => x + y, 0);
+  // Riot se eie lys (uit die League-kliënt), anders die champion se tipe
+  let base = {};
   const rp = riotPositions.map[championId];
-  if (rp && rp.length) {
-    const m = {};
-    rp.forEach((r, i) => { m[r] = (m[r] || 0) + ([6, 3, 1][i] || 1); });
-    return m;
+  if (rp && rp.length) rp.forEach((r, i) => { base[r] = (base[r] || 0) + ([6, 3, 1][i] || 1); });
+  else {
+    const tags = (DD && DD.champions[championId] && DD.champions[championId].tags) || [];
+    for (const t of tags) for (const [r, w] of Object.entries(TAG_PRIOR[t] || {})) base[r] = (base[r] || 0) + w;
   }
+  const baseTotal = Object.values(base).reduce((x, y) => x + y, 0);
+  if (!baseTotal) return data;
+  if (!total) return base;
+  // Meng: ons games plus Riot se posisies as ekstra "games", sodat 'n paar vreemde games nie die rol omkeer nie
   const m = {};
-  const tags = (DD && DD.champions[championId] && DD.champions[championId].tags) || [];
-  for (const t of tags) for (const [r, w] of Object.entries(TAG_PRIOR[t] || {})) m[r] = (m[r] || 0) + w;
+  for (const r of builds.ROLES) {
+    const v = (data[r] || 0) + RIOT_PRIOR_GAMES * ((base[r] || 0) / baseTotal);
+    if (v > 0) m[r] = v;
+  }
   return m;
 }
 
@@ -510,7 +527,7 @@ function orderSpells(ids, cs) {
   return [a, b];
 }
 
-async function doImport(championId, role, what, cs, vs) {
+async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
   await getDDragon().catch(() => {});
   const b = buildFor(championId, role, false, vs);
   const rec = b.rec;
@@ -530,7 +547,8 @@ async function doImport(championId, role, what, cs, vs) {
   }
   const results = {};
   const replace = getPrefs().replacePages;
-  if (what.has('runes') && rec.runes[0]) results.runes = await lcu.importRunes(rec.runes[0].page, `RiftScout ${champ.name}`, replace);
+  const runePage = rec.runes[runeIndex] || rec.runes[0]; // die bladsy wat jy in die app gekies het
+  if (what.has('runes') && runePage) results.runes = await lcu.importRunes(runePage.page, `RiftScout ${champ.name}`, replace);
   const vsName = rec.vs && DD && DD.champions[rec.vs.championId] ? DD.champions[rec.vs.championId].name : '';
   const setTitle = `RiftScout ${champ.name} ${ROLE_NAMES[b.role] || ''}${vsName && rec.fromMatchup.length ? ` vs ${vsName}` : ''}`.trim();
   if (what.has('items')) results.items = await lcu.importItemSet(championId, setTitle, itemBlocks(rec));
@@ -547,6 +565,7 @@ let vsOverride = null; // lane-teenstander wat die speler self gekies het (as on
 let lastImport = null;
 let lastAutoKey = '';
 let lastSpellKey = '';
+let manualRunesFor = 0; // champion waarvoor jy self 'n rune-bladsy gekies het (dan los die outomatiese invoer dit)
 let hoverSince = { key: '', at: 0 };
 let prevPhase = null;
 const champSelectListeners = [];
@@ -575,7 +594,7 @@ async function lcuTick() {
     if (!!st.connected !== !!me.connected) me.at = 0;
     if (st.connected || me.at === 0) whoAmI().catch(() => {});
     if ((API_KEY || st.connected) && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
-    if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; lastSpellKey = ''; vsOverride = null; return; }
+    if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; lastSpellKey = ''; vsOverride = null; manualRunesFor = 0; return; }
     const cs = lcuState.champSelect;
     const prefs = getPrefs();
     if (!cs || !cs.championId || !prefs.autoImport) return;
@@ -590,6 +609,8 @@ async function lcuTick() {
     const what = new Set(cs.role ? ['runes', 'items'] : ['runes']);
     // Spells een keer per champion (nie weer as net die teenstander verander nie), en net met lanes (nie ARAM nie)
     if (prefs.autoSpells && cs.role && lastSpellKey !== champKey) what.add('spells');
+    if (manualRunesFor === cs.championId) what.delete('runes');
+    if (!what.size) { lastAutoKey = key; return; }
     const result = await doImport(cs.championId, cs.role, what, cs, cs.vs);
     lastImport = { ...result, auto: true };
     if (!result.retry) { // nog te min data: probeer weer sodra daar meer is
@@ -1115,7 +1136,8 @@ app.get('/api/builds/counters/:id', wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id) || id <= 0) throw httpError(400, 'Invalid champion.');
   const role = String(req.query.role || '').toUpperCase();
-  res.json(countersFor(id, builds.ROLES.includes(role) ? role : ''));
+  const me = Number(req.query.me) || 0;
+  res.json(countersFor(id, builds.ROLES.includes(role) ? role : '', Number.isInteger(me) && me > 0 ? me : 0));
 }));
 
 app.get('/api/builds/best', wrap(async (req, res) => {
@@ -1145,7 +1167,13 @@ app.post('/api/lcu/import', wrap(async (req, res) => {
   if (!what.size) throw httpError(400, 'Choose what to import: runes, items and/or spells.');
   const role = builds.ROLES.includes(req.body.role) ? req.body.role : '';
   const vs = Number(req.body.vs) || null;
-  lastImport = await doImport(championId, role, what, lcuState.champSelect, vs);
+  const runeIndex = Math.max(0, Math.min(2, Number(req.body.runeIndex) || 0));
+  lastImport = await doImport(championId, role, what, lcuState.champSelect, vs, runeIndex);
+  // Het jy self runes vir jou champion in champ select gekies? Dan oorskryf die outomatiese invoer dit nie
+  const cs = lcuState.champSelect;
+  if (what.has('runes') && lcuState.phase === 'ChampSelect' && cs && cs.championId === championId && lastImport.results && lastImport.results.runes && lastImport.results.runes.ok) {
+    manualRunesFor = championId;
+  }
   res.json(lastImport);
 }));
 
