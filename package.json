@@ -1,7 +1,7 @@
 {
   "name": "riftscout",
   "productName": "RiftScout",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "League of Legends companion: builds and runes from high-elo games, auto-import in champ select, in-game overlay, profiles and match history.",
   "author": "Overthrow6981",
   "license": "UNLICENSED",
@@ -15,7 +15,8 @@
     "start": "electron .",
     "server": "node server.js",
     "dist": "electron-builder --win",
-    "collect": "node tools/collect.js"
+    "collect": "node tools/collect.js",
+    "test": "node --test \"test/*.test.js\""
   },
   "dependencies": {
     "dotenv": "^16.4.5",
