@@ -762,7 +762,7 @@ async function pollBuildStatus() {
     const parts = [];
     const total = s.analysed + s.sharedMatches;
     parts.push(`${total.toLocaleString()} high-elo matches analysed`);
-    if (s.sharedMatches) parts.push(`${s.sharedMatches.toLocaleString()} from shared data`);
+    if (s.sharedMatches) parts.push(`${s.sharedMatches.toLocaleString()} from shared data${s.sharedRegions && s.sharedRegions.length > 1 ? ` (${s.sharedRegions.length} servers: ${s.sharedRegions.join(', ')})` : ''}`);
     if (!s.enabled) parts.push('background collection is off (Settings)');
     else if (!s.hasKey) parts.push(s.sharedMatches ? 'shared data updates every few hours' : 'build data is on its way – shared data updates every few hours');
     else if (s.lastError) parts.push(`collection stopped: ${s.lastError}`);
