@@ -15,6 +15,7 @@
       <button class="tab" data-tab="lobby">Lobby <span id="lobbyDot" class="dot"></span></button>
       <button class="tab" data-tab="live">Live Game <span id="liveDot" class="dot"></span></button>
     </nav>
+    <button id="meChip" class="me-chip hidden" title="Open your profile"><img id="meIcon" alt=""><span id="meName"></span><span id="meRegion" class="me-region"></span><span id="meDot" class="dot"></span></button>
     <button id="settingsBtn" class="settings-btn" title="Settings">⚙ Settings</button>
   </header>
 
@@ -32,7 +33,7 @@
       <label class="check"><input type="checkbox" id="prefCollect" /> Collect build data from top players in the background</label>
       <label class="inline">Region to collect from
         <select id="prefRegion">
-          <option value="">Same as my last search</option>
+          <option value="">My server (detected from League)</option>
           <option value="na1">NA</option><option value="euw1">EUW</option><option value="eun1">EUNE</option>
           <option value="kr">KR</option><option value="br1">BR</option><option value="la1">LAN</option>
           <option value="la2">LAS</option><option value="oc1">OCE</option><option value="tr1">TR</option>
@@ -88,6 +89,7 @@
         <input id="riotId" type="text" placeholder="Riot ID, e.g. Faker#KR1" autocomplete="off" />
         <button type="submit">Search</button>
       </form>
+      <div id="meHint" class="notice hidden">Open the League client and RiftScout fills in your name and server by itself.</div>
       <div id="keyWarning" class="notice hidden">
         No Riot API key yet – click <b>⚙ Settings</b> (top right) and paste your key to search players.
         The Live Game tab works without a key.

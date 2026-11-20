@@ -76,7 +76,46 @@ document.querySelectorAll('.tab').forEach((btn) =>
 // ---------- Profiel ----------
 $('searchForm').addEventListener('submit', (e) => {
   e.preventDefault();
-  search($('region').value, $('riotId').value.trim());
+  const riotId = $('riotId').value.trim();
+  // Soek jy iemand anders, laai ons nie later outomaties jou eie profiel oor hulle s'n nie
+  viewingOther = !mine || riotId.toLowerCase() !== mine.riotId.toLowerCase() || $('region').value !== mine.region;
+  search($('region').value, riotId);
+});
+
+// ---------- Jou rekening: naam en bediener kom vanself uit die League-kliënt ----------
+let mine = null;          // { riotId, region, connected, ... }
+let viewingOther = false;
+let autoLoadedKey = '';
+const REGION_LABEL = Object.fromEntries([...$('region').options].map((o) => [o.value, o.textContent]));
+
+async function pollMe() {
+  let m;
+  try { m = await api('/api/me'); } catch { return; }
+  $('meHint').classList.toggle('hidden', !!(m.riotId && m.region));
+  if (!m.riotId || !m.region) { $('meChip').classList.add('hidden'); return; }
+  mine = m;
+  $('meName').textContent = m.riotId;
+  $('meRegion').textContent = REGION_LABEL[m.region] || m.region.toUpperCase();
+  $('meIcon').src = m.profileIconId != null && dd.version ? iconImg(m.profileIconId) : '';
+  $('meDot').classList.toggle('on', !!m.connected);
+  $('meChip').title = (m.connected ? 'Signed in to League as ' : 'Last League account: ') + m.riotId + ' — click to open your profile';
+  $('meChip').classList.remove('hidden');
+  const key = `${m.region}:${m.riotId.toLowerCase()}`;
+  if (key === autoLoadedKey) return;
+  autoLoadedKey = key;
+  if (viewingOther) return;
+  $('region').value = m.region;
+  $('riotId').value = m.riotId;
+  if (hasKey) search(m.region, m.riotId);
+}
+
+$('meChip').addEventListener('click', () => {
+  if (!mine) return;
+  viewingOther = false;
+  document.querySelector('.tab[data-tab="profile"]').click();
+  $('region').value = mine.region;
+  $('riotId').value = mine.riotId;
+  search(mine.region, mine.riotId);
 });
 
 async function search(region, riotId) {
@@ -376,6 +415,7 @@ $('lobby').addEventListener('click', (e) => {
   const a = e.target.closest('a[data-riot]');
   if (!a || !a.dataset.riot) return;
   e.preventDefault();
+  viewingOther = true;
   $('region').value = lobbyRegion;
   $('riotId').value = a.dataset.riot;
   document.querySelector('.tab[data-tab="profile"]').click();
@@ -449,6 +489,8 @@ $('settingsSave').addEventListener('click', async () => {
     msg.className = 'hint ok';
     pollBuildStatus();
     setTimeout(() => $('settings').classList.add('hidden'), 900);
+    // Nuwe sleutel en ons ken jou rekening al: wys dadelik jou profiel
+    if (key && hasKey && mine && !viewingOther && !current) search(mine.region, mine.riotId);
   } catch (err) {
     msg.textContent = err.message;
     msg.className = 'hint err';
@@ -729,7 +771,9 @@ async function pollLcu() {
   const riotId = hId ? decodeURIComponent(hId) : store.get('lastRiotId') || '';
   $('region').value = region;
   $('riotId').value = riotId;
-  if (hId) search(region, riotId);
+  if (hId) { viewingOther = true; search(region, riotId); }
+  await pollMe();         // vul jou naam en bediener in en laai jou profiel
+  setInterval(pollMe, 5000);
 
   renderChampGrid();
   showGrid(true);

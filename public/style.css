@@ -331,3 +331,11 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .t-master { color: #c084fc; }
 .t-grandmaster { color: #f87171; }
 .t-challenger { color: #fde68a; }
+
+/* Jou rekening (uit die League-kliënt) */
+.me-chip { margin-left: auto; display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); font: inherit; font-weight: 700; padding: 4px 12px 4px 4px; border-radius: 999px; cursor: pointer; max-width: 320px; }
+.me-chip:hover { border-color: var(--muted); }
+.me-chip img { width: 28px; height: 28px; border-radius: 50%; background: var(--line); }
+.me-chip #meName { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.me-region { color: var(--muted); font-weight: 600; font-size: 12px; }
+.me-chip:not(.hidden) + .settings-btn { margin-left: 0; }
