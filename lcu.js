@@ -180,16 +180,34 @@ async function setSpells(spell1Id, spell2Id) {
 }
 
 // Wie is ingeteken, en op watter bediener (bv. "na1")
+// LoginDataPacket gee die bediener-ID (NA1, EUW1, KR ...); region-locale is die rugsteun (NA, EUW, ...).
+const REGION_TO_PLATFORM = {
+  NA: 'na1', EUW: 'euw1', EUNE: 'eun1', KR: 'kr', BR: 'br1', LA1: 'la1', LAN: 'la1', LA2: 'la2', LAS: 'la2',
+  OC1: 'oc1', OCE: 'oc1', TR: 'tr1', RU: 'ru', JP: 'jp1', ME1: 'me1', SG2: 'sg2', SEA: 'sg2', PH2: 'sg2', TH2: 'sg2', TW2: 'tw2', VN2: 'vn2',
+};
+function normPlatform(id) {
+  const v = String(id || '').trim().toLowerCase();
+  if (!v) return null;
+  if (v === 'ph2' || v === 'th2') return 'sg2'; // SEA-bedieners is saamgevoeg
+  return v;
+}
 async function identity() {
-  const [me, plat] = await Promise.all([
-    request('GET', '/lol-summoner/v1/current-summoner'),
-    request('GET', '/lol-platform-config/v1/namespaces/LoginDataPacket/platformId'),
-  ]);
-  if (me.status !== 200 || !me.data) return null;
+  const me = await request('GET', '/lol-summoner/v1/current-summoner');
+  if (me.status !== 200 || !me.data || !me.data.puuid) return null;
+  let platform = null;
+  const plat = await request('GET', '/lol-platform-config/v1/namespaces/LoginDataPacket/platformId').catch(() => null);
+  if (plat && plat.status === 200 && typeof plat.data === 'string') platform = normPlatform(plat.data);
+  if (!platform) {
+    const rl = await request('GET', '/riotclient/region-locale').catch(() => null);
+    const r = rl && rl.status === 200 && rl.data ? String(rl.data.region || rl.data.webRegion || '').toUpperCase() : '';
+    platform = REGION_TO_PLATFORM[r] || null;
+  }
   return {
-    puuid: me.data.puuid || null,
+    puuid: me.data.puuid,
     riotId: me.data.gameName ? `${me.data.gameName}#${me.data.tagLine}` : null,
-    platform: plat.status === 200 && typeof plat.data === 'string' ? plat.data.toLowerCase() : null,
+    platform,
+    level: me.data.summonerLevel || null,
+    profileIconId: me.data.profileIconId != null ? me.data.profileIconId : null,
   };
 }
 

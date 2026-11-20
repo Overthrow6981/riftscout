@@ -253,9 +253,13 @@ let crawler = null;
 let remoteInfo = { matches: 0, updated: 0 };
 let lastUserActivity = 0;
 
+// Streek vir build-data: jou keuse in Settings, anders jou eie bediener (uit League), anders jou laaste soektog
 function crawlRegion() {
   const p = getPrefs();
-  return PLATFORMS[p.crawlRegion] ? p.crawlRegion : (PLATFORMS[loadConfig().lastRegion] ? loadConfig().lastRegion : 'na1');
+  if (PLATFORMS[p.crawlRegion]) return p.crawlRegion;
+  const cfg = loadConfig();
+  if (cfg.me && PLATFORMS[cfg.me.region]) return cfg.me.region;
+  return PLATFORMS[cfg.lastRegion] ? cfg.lastRegion : 'na1';
 }
 
 function updateCrawler() {
@@ -386,6 +390,7 @@ async function lcuTick() {
     const st = await lcu.state();
     if (st.champSelect) st.champSelect.vs = enemyLaner(st.champSelect.enemies || [], st.champSelect.role);
     lcuState = st;
+    if (st.connected) whoAmI().catch(() => {}); // tel jou rekening en bediener op sodra League oop is
     if (API_KEY && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
     if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; return; }
     const cs = lcuState.champSelect;
@@ -405,17 +410,26 @@ async function lcuTick() {
 // Champ select: spanmaats (as Riot hul name wys). Van die laaiskerm af: al 10 spelers via spectator-v5.
 let lobby = { key: '', data: null };
 let lobbyPromise = null;
-let me = { puuid: null, riotId: null, region: null, at: 0 };
+let me = { connected: false, puuid: null, riotId: null, region: null, level: null, profileIconId: null, at: 0 };
 
+// Jou rekening en bediener kom uit die League-kliënt; die laaste een word onthou vir wanneer League toe is
 async function whoAmI() {
-  if (me.puuid && Date.now() - me.at < 10 * 60e3) return me;
+  if (Date.now() - me.at < (me.connected ? 30e3 : 5e3)) return me;
   const id = await lcu.identity().catch(() => null);
-  me = {
-    puuid: id ? id.puuid : null,
-    riotId: id ? id.riotId : null,
-    region: id && PLATFORMS[id.platform] ? id.platform : crawlRegion(),
-    at: Date.now(),
-  };
+  const cfg = loadConfig();
+  if (id) {
+    const region = PLATFORMS[id.platform] ? id.platform : null;
+    me = { connected: true, puuid: id.puuid, riotId: id.riotId, region, level: id.level, profileIconId: id.profileIconId, at: Date.now() };
+    const saved = cfg.me || {};
+    if (saved.puuid !== me.puuid || saved.riotId !== me.riotId || saved.region !== region || saved.profileIconId !== me.profileIconId) {
+      cfg.me = { puuid: me.puuid, riotId: me.riotId, region, level: me.level, profileIconId: me.profileIconId };
+      saveConfig(cfg);
+    }
+  } else {
+    const saved = cfg.me || {};
+    me = { connected: false, puuid: saved.puuid || null, riotId: saved.riotId || null, region: saved.region || null,
+      level: saved.level || null, profileIconId: saved.profileIconId != null ? saved.profileIconId : null, at: Date.now() };
+  }
   return me;
 }
 
@@ -471,7 +485,7 @@ async function computeLobby() {
   const phase = lcuState.phase;
   if (!API_KEY) return { phase, teams: [], error: 'Add a Riot API key in Settings to scout the players in your games.' };
   const id = await whoAmI();
-  const region = id.region;
+  const region = id.region || crawlRegion();
 
   // --- Champ select: my span ---
   if (phase === 'ChampSelect' && lcuState.champSelect) {
@@ -766,6 +780,10 @@ app.get('/api/matches', wrap(async (req, res) => {
 }));
 
 app.get('/api/live', wrap(async (req, res) => res.json(await getLiveData())));
+app.get('/api/me', wrap(async (req, res) => {
+  const m = await whoAmI();
+  res.json({ connected: m.connected, riotId: m.riotId, region: m.region, level: m.level, profileIconId: m.profileIconId });
+}));
 app.get('/api/lobby', wrap(async (req, res) => res.json(await getLobby())));
 app.get('/api/overlay', wrap(async (req, res) => res.json(await overlayData())));
 

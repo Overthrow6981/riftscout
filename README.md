@@ -8,6 +8,7 @@ A League of Legends companion app for Windows – like Blitz, but simple:
 - **Lobby scouting:** from the loading screen on, all 10 players with rank, win rate, level and mastery on the champion they picked, plus tags like *One-trick*, *First time on champ*, *Hot streak* and *Possible smurf*. Your lane opponent is highlighted and their scouting line also shows in the overlay. In champ select you see your own team (Riot hides names in ranked champ select, and RiftScout respects that).
 - **In-game overlay:** your lane opponent and matchup win rate, next item to buy, "Level up" reminder, KDA, CS/min and gold on top of the game (Borderless or Windowed mode; Ctrl+Shift+O hides it).
 - **Profiles & match history:** rank, LP, mastery and recent games for any Riot ID.
+- **Knows who you are:** with the League client open, RiftScout picks up your Riot ID and server by itself and opens your profile — no typing. It remembers them for when League is closed.
 - **Live game view** of both teams.
 
 ## Download
