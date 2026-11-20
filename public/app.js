@@ -91,7 +91,7 @@ const REGION_LABEL = Object.fromEntries([...$('region').options].map((o) => [o.v
 async function pollMe() {
   let m;
   try { m = await api('/api/me'); } catch { return; }
-  $('meHint').classList.toggle('hidden', !!(m.riotId && m.region));
+  $('meHint').classList.toggle('hidden', !!(m.riotId && m.region) && (hasKey || m.connected || !!current));
   if (!m.riotId || !m.region) { $('meChip').classList.add('hidden'); return; }
   mine = m;
   $('meName').textContent = m.riotId;
@@ -101,12 +101,13 @@ async function pollMe() {
   $('meChip').title = (m.connected ? 'Signed in to League as ' : 'Last League account: ') + m.riotId + ' — click to open your profile';
   $('meChip').classList.remove('hidden');
   const key = `${m.region}:${m.riotId.toLowerCase()}`;
-  if (key === autoLoadedKey) return;
-  autoLoadedKey = key;
-  if (viewingOther) return;
+  if (key === autoLoadedKey || viewingOther) return;
   $('region').value = m.region;
   $('riotId').value = m.riotId;
-  if (hasKey) search(m.region, m.riotId);
+  // Sonder sleutel kom die profiel uit League self, so wag tot League oop is
+  if (!hasKey && !m.connected) return;
+  autoLoadedKey = key;
+  search(m.region, m.riotId);
 }
 
 $('meChip').addEventListener('click', () => {
@@ -440,7 +441,7 @@ let hasKey = false;
 async function openSettings() {
   $('settingsMsg').textContent = '';
   $('settingsMsg').className = 'hint';
-  $('keyState').textContent = hasKey ? '✓ A Riot API key is saved. Paste a new one below to replace it.' : 'No Riot API key saved yet.';
+  $('keyState').textContent = hasKey ? '✓ A Riot API key is saved. Paste a new one below to replace it.' : 'No key saved – that\'s fine.';
   $('keyState').className = 'hint ' + (hasKey ? 'ok' : '');
   $('removeKey').classList.toggle('hidden', !hasKey);
   try {
@@ -453,7 +454,6 @@ async function openSettings() {
     $('prefPos').value = p.overlayPosition;
   } catch { /* gebruik wat daar is */ }
   $('settings').classList.remove('hidden');
-  $('apiKey').focus();
 }
 async function postJson(url, data) {
   const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
@@ -463,7 +463,6 @@ async function postJson(url, data) {
 }
 function setHasKey(v) {
   hasKey = v;
-  $('keyWarning').classList.toggle('hidden', v);
 }
 $('settingsBtn').addEventListener('click', openSettings);
 $('settingsCancel').addEventListener('click', () => $('settings').classList.add('hidden'));
@@ -485,12 +484,12 @@ $('settingsSave').addEventListener('click', async () => {
       overlayPosition: $('prefPos').value,
     });
     $('apiKey').value = '';
-    msg.textContent = key ? 'Saved! You can search players now.' : 'Settings saved.';
+    msg.textContent = 'Settings saved.';
     msg.className = 'hint ok';
     pollBuildStatus();
     setTimeout(() => $('settings').classList.add('hidden'), 900);
     // Nuwe sleutel en ons ken jou rekening al: wys dadelik jou profiel
-    if (key && hasKey && mine && !viewingOther && !current) search(mine.region, mine.riotId);
+    if (key && hasKey && mine && !viewingOther && !current) { autoLoadedKey = `${mine.region}:${mine.riotId.toLowerCase()}`; search(mine.region, mine.riotId); }
   } catch (err) {
     msg.textContent = err.message;
     msg.className = 'hint err';
@@ -695,7 +694,7 @@ async function pollBuildStatus() {
     parts.push(`${total.toLocaleString()} high-elo matches analysed`);
     if (s.sharedMatches) parts.push(`${s.sharedMatches.toLocaleString()} from shared data`);
     if (!s.enabled) parts.push('background collection is off (Settings)');
-    else if (!s.hasKey) parts.push('add a Riot API key in Settings to collect more');
+    else if (!s.hasKey) parts.push(s.sharedMatches ? 'shared data updates every few hours' : 'build data is on its way – shared data updates every few hours');
     else if (s.lastError) parts.push(`collection stopped: ${s.lastError}`);
     else if (s.running) parts.push(`collecting from ${(s.region || '').toUpperCase()}: ${s.state}${s.session ? ` (+${s.session} this session)` : ''}`);
     $('buildStatus').textContent = parts.join(' · ');
@@ -762,8 +761,6 @@ async function pollLcu() {
     const st = await api('/api/status');
     setHasKey(st.hasKey);
     if (st.version) $('appVersion').textContent = `RiftScout v${st.version}`;
-    // Maak Settings net die heel eerste keer vanself oop
-    if (!st.hasKey && !store.get('settingsSeen')) { store.set('settingsSeen', '1'); openSettings(); }
   } catch { /* ignore */ }
 
   const [hRegion, hId] = location.hash.slice(1).split('/');

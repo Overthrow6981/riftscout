@@ -22,11 +22,13 @@
   <div id="settings" class="modal hidden" role="dialog" aria-label="Settings">
     <div class="modal-box">
       <h2>Settings</h2>
-      <label for="apiKey">Riot API key</label>
+      <label for="apiKey">Riot API key <span class="opt">(optional – you don't need one)</span></label>
+      <p class="hint">RiftScout gets your profile, match history and lobby scouting straight from the League client.
+        A key only adds searching players on <b>other servers</b> and collecting extra build data on this PC.</p>
       <div id="keyState" class="hint"></div>
-      <input id="apiKey" type="password" placeholder="Paste a new key: RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" />
-      <p class="hint">Get a free key at <a href="https://developer.riotgames.com" target="_blank" rel="noopener">developer.riotgames.com</a>
-        (sign in → Development API Key). Development keys expire every 24 hours. The key is only stored on this computer.
+      <input id="apiKey" type="password" placeholder="Optional: RGAPI-xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" autocomplete="off" />
+      <p class="hint">Keys come from <a href="https://developer.riotgames.com" target="_blank" rel="noopener">developer.riotgames.com</a>.
+        Development keys expire every 24 hours. The key is only stored on this computer.
         <button id="removeKey" class="linkbtn hidden" type="button">Remove saved key</button></p>
 
       <h3 class="set-h">Builds &amp; runes</h3>
@@ -89,11 +91,7 @@
         <input id="riotId" type="text" placeholder="Riot ID, e.g. Faker#KR1" autocomplete="off" />
         <button type="submit">Search</button>
       </form>
-      <div id="meHint" class="notice hidden">Open the League client and RiftScout fills in your name and server by itself.</div>
-      <div id="keyWarning" class="notice hidden">
-        No Riot API key yet – click <b>⚙ Settings</b> (top right) and paste your key to search players.
-        The Live Game tab works without a key.
-      </div>
+      <div id="meHint" class="notice hidden">Open the League client – RiftScout picks up your name and server by itself and shows your profile. No API key needed.</div>
       <div id="message" class="notice hidden"></div>
       <div id="profile"></div>
       <div id="summary"></div>
