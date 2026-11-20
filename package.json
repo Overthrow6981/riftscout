@@ -1,7 +1,7 @@
 {
   "name": "riftscout",
   "productName": "RiftScout",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "description": "League of Legends companion: builds and runes from high-elo games, auto-import in champ select, in-game overlay, profiles and match history.",
   "author": "Overthrow6981",
   "license": "UNLICENSED",
