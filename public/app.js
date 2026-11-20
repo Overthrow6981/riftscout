@@ -754,6 +754,32 @@ async function pollLcu() {
   if (li && li.at && li.at !== lastImportAt) lastImportAt = li.at;
 }
 
+// ---------- Updates ----------
+async function pollUpdate() {
+  let u;
+  try { u = await api('/api/update'); } catch { return; }
+  const bar = $('updateBar');
+  let html = '';
+  if (u.state === 'downloading') {
+    html = `<span>Downloading RiftScout ${esc(u.version || '')}… <b>${u.percent || 0}%</b></span><span class="ub-track"><span class="ub-fill" style="width:${u.percent || 0}%"></span></span>`;
+  } else if (u.state === 'installing') {
+    html = `<span>Installing RiftScout ${esc(u.version || '')} – the app closes and opens again by itself…</span>`;
+  } else if (u.state === 'ready') {
+    html = `<span>RiftScout ${esc(u.version || '')} is ready.${u.busy ? ' It installs after your game, when you close RiftScout.' : ' It installs when you close RiftScout.'}</span>
+      <button id="updateNow" type="button">Restart now</button>`;
+  }
+  bar.classList.toggle('hidden', !html);
+  if (bar.dataset.html !== html) { bar.dataset.html = html; bar.innerHTML = html; }
+  const btn = $('updateNow');
+  if (btn && !btn.dataset.bound) {
+    btn.dataset.bound = '1';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try { await postJson('/api/update/install', {}); } catch (err) { btn.disabled = false; showMessage(err.message, true); }
+    });
+  }
+}
+
 // ---------- Begin ----------
 (async function init() {
   await loadDDragon();
@@ -782,4 +808,6 @@ async function pollLcu() {
   setInterval(pollLive, 3000);
   pollLobby();
   setInterval(pollLobby, 4000);
+  pollUpdate();
+  setInterval(pollUpdate, 2000);
 })();

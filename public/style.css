@@ -341,3 +341,11 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 .me-chip:not(.hidden) + .settings-btn { margin-left: 0; }
 
 .opt { color: var(--muted); font-weight: 500; font-size: 12px; }
+
+/* Update-balk */
+.update-bar { display: flex; align-items: center; gap: 14px; padding: 9px 24px; background: #1d2a44; border-bottom: 1px solid #2e4470; color: #dce6ff; font-size: 14px; position: sticky; top: 61px; z-index: 4; }
+.update-bar b { color: #fff; }
+.update-bar button { margin-left: auto; background: var(--accent, #e5484d); color: #fff; border: 0; font: inherit; font-weight: 700; padding: 6px 14px; border-radius: 8px; cursor: pointer; }
+.update-bar button:disabled { opacity: .6; cursor: default; }
+.ub-track { flex: 1; max-width: 320px; height: 6px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; }
+.ub-fill { display: block; height: 100%; background: #7aa2ff; transition: width .4s; }
