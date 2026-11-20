@@ -43,8 +43,10 @@ function saveConfig(cfg) {
 const DEFAULT_PREFS = {
   collectBuilds: true,      // versamel build-data in die agtergrond
   crawlRegion: '',          // leeg = streek van jou laaste soektog
-  autoImport: true,         // sit runes en items outomaties in tydens champ select
-  replaceRunePage: false,   // vervang die huidige rune page as daar geen plek is nie
+  autoImport: true,         // sit runes en items outomaties in sodra jy 'n champion kies
+  autoSpells: true,         // sit ook summoner spells outomaties (net op Summoner's Rift)
+  replacePages: true,       // as al die rune pages vol is: vervang die huidige een (soos Blitz)
+  openOnChampSelect: true,  // bring RiftScout na vore sodra champ select begin
   overlay: true,            // wys die oorleg in die spel
   overlayPosition: 'right', // right | left | top-right
 };
@@ -501,7 +503,7 @@ async function doImport(championId, role, what, cs, vs) {
     const page = await lcu.recommendedPage(championId, pos).catch(() => null);
     if (!page) return { ok: false, retry: true, championId, error: `No runes for ${champ.name} yet – is the League client open?` };
     const results = {};
-    if (what.has('runes')) results.runes = await lcu.importRunes(page, `RiftScout ${champ.name}`, getPrefs().replaceRunePage);
+    if (what.has('runes')) results.runes = await lcu.importRunes(page, `RiftScout ${champ.name}`, getPrefs().replacePages);
     if (what.has('spells') && page.spells.length === 2) results.spells = await lcu.setSpells(...orderSpells(page.spells, cs));
     return {
       ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: pos,
@@ -509,7 +511,7 @@ async function doImport(championId, role, what, cs, vs) {
     };
   }
   const results = {};
-  const replace = getPrefs().replaceRunePage;
+  const replace = getPrefs().replacePages;
   if (what.has('runes') && rec.runes[0]) results.runes = await lcu.importRunes(rec.runes[0].page, `RiftScout ${champ.name}`, replace);
   const vsName = rec.vs && DD && DD.champions[rec.vs.championId] ? DD.champions[rec.vs.championId].name : '';
   const setTitle = `RiftScout ${champ.name} ${ROLE_NAMES[b.role] || ''}${vsName && rec.fromMatchup.length ? ` vs ${vsName}` : ''}`.trim();
@@ -526,6 +528,11 @@ let lcuState = { connected: false, phase: null, champSelect: null };
 let vsOverride = null; // lane-teenstander wat die speler self gekies het (as ons raaiskoot verkeerd is)
 let lastImport = null;
 let lastAutoKey = '';
+let lastSpellKey = '';
+let hoverSince = { key: '', at: 0 };
+let prevPhase = null;
+const champSelectListeners = [];
+function onChampSelectStart(fn) { champSelectListeners.push(fn); }
 let lcuBusy = false;
 async function lcuTick() {
   if (lcuBusy) return;
@@ -541,19 +548,35 @@ async function lcuTick() {
       cs.vs = cs.vsManual ? vsOverride : cs.vsAuto;
     }
     lcuState = st;
+    if (st.phase === 'ChampSelect' && prevPhase !== 'ChampSelect') {
+      lastImport = null; // nuwe champ select: ou invoer-boodskap weg
+      for (const fn of champSelectListeners) { try { fn(); } catch { /* nie ons probleem nie */ } }
+    }
+    prevPhase = st.phase;
     // Hou "is League oop?" dadelik op datum (en tel jou rekening en bediener op sodra League oopmaak)
     if (!!st.connected !== !!me.connected) me.at = 0;
     if (st.connected || me.at === 0) whoAmI().catch(() => {});
     if ((API_KEY || st.connected) && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
-    if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; vsOverride = null; return; }
+    if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; lastSpellKey = ''; vsOverride = null; return; }
     const cs = lcuState.champSelect;
-    if (!cs || !cs.championId || !cs.locked || !getPrefs().autoImport) return;
+    const prefs = getPrefs();
+    if (!cs || !cs.championId || !prefs.autoImport) return;
+    // Sodra jy 'n champion kies (hover of lock) en 'n oomblik daarop bly: alles dadelik invoer
+    const champKey = `${cs.championId}:${cs.role}`;
+    if (hoverSince.key !== champKey) hoverSince = { key: champKey, at: Date.now() };
+    if (!cs.locked && Date.now() - hoverSince.at < 1500) return;
     // Sleutel sluit die teenstander in: as die vyand later kies, word die matchup-build ingevoer
-    const key = `${cs.championId}:${cs.role}:${cs.vs || ''}`;
+    const key = `${champKey}:${cs.vs || ''}`;
     if (key === lastAutoKey) return;
-    const result = await doImport(cs.championId, cs.role, new Set(['runes', 'items']), cs, cs.vs);
+    const what = new Set(['runes', 'items']);
+    // Spells een keer per champion (nie weer as net die teenstander verander nie), en net met lanes (nie ARAM nie)
+    if (prefs.autoSpells && cs.role && lastSpellKey !== champKey) what.add('spells');
+    const result = await doImport(cs.championId, cs.role, what, cs, cs.vs);
     lastImport = { ...result, auto: true };
-    if (!result.retry) lastAutoKey = key; // nog te min data: probeer weer sodra daar meer is
+    if (!result.retry) { // nog te min data: probeer weer sodra daar meer is
+      lastAutoKey = key;
+      if (what.has('spells')) lastSpellKey = champKey;
+    }
   } catch { /* volgende keer weer */ } finally {
     lcuBusy = false;
   }
@@ -925,7 +948,7 @@ app.post('/api/prefs', wrap(async (req, res) => {
   const b = req.body || {};
   const cfg = loadConfig();
   const p = { ...(cfg.prefs || {}) };
-  for (const k of ['collectBuilds', 'autoImport', 'replaceRunePage', 'overlay']) if (typeof b[k] === 'boolean') p[k] = b[k];
+  for (const k of ['collectBuilds', 'autoImport', 'autoSpells', 'replacePages', 'openOnChampSelect', 'overlay']) if (typeof b[k] === 'boolean') p[k] = b[k];
   if (typeof b.crawlRegion === 'string' && (b.crawlRegion === '' || PLATFORMS[b.crawlRegion])) p.crawlRegion = b.crawlRegion;
   if (['right', 'left', 'top-right'].includes(b.overlayPosition)) p.overlayPosition = b.overlayPosition;
   cfg.prefs = p;
@@ -1088,7 +1111,10 @@ app.post('/api/lcu/vs', wrap(async (req, res) => {
   res.json({ ok: true, vs: lcuState.champSelect ? lcuState.champSelect.vs : null });
 }));
 
-app.get('/api/lcu/state', (req, res) => res.json({ ...lcuState, lastImport }));
+app.get('/api/lcu/state', (req, res) => {
+  const p = getPrefs();
+  res.json({ ...lcuState, lastImport, autoImport: p.autoImport, autoSpells: p.autoSpells });
+});
 app.post('/api/lcu/import', wrap(async (req, res) => {
   requireJson(req);
   const championId = Number(req.body.championId);
@@ -1152,7 +1178,7 @@ async function isBusy() {
   return (await getLiveData()).inGame;
 }
 
-module.exports = { startServer, getLiveData, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy };
+module.exports = { startServer, getLiveData, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy, onChampSelectStart };
 
 if (require.main === module) {
   startServer({ port: Number(process.env.PORT) || 3000 }).then((port) => {

@@ -148,14 +148,18 @@ async function importRunes(rune, name, replaceCurrent) {
   let r = await request('POST', '/lol-perks/v1/pages', body);
   if (ok(r)) return { ok: true };
   if (replaceCurrent) {
+    // Alle bladsye vol: vervang die huidige bladsy (of anders die laaste een wat jy kan uitvee)
     const cur = await request('GET', '/lol-perks/v1/currentpage');
-    if (cur.status === 200 && cur.data && cur.data.isDeletable) {
-      await request('DELETE', `/lol-perks/v1/pages/${cur.data.id}`);
+    const left = await request('GET', '/lol-perks/v1/pages');
+    const own = ((left.status === 200 && left.data) || []).filter((p) => p.isDeletable);
+    const target = (cur.status === 200 && cur.data && cur.data.isDeletable) ? cur.data : own[own.length - 1];
+    if (target) {
+      await request('DELETE', `/lol-perks/v1/pages/${target.id}`);
       r = await request('POST', '/lol-perks/v1/pages', body);
-      if (ok(r)) return { ok: true, replaced: cur.data.name };
+      if (ok(r)) return { ok: true, replaced: target.name };
     }
   }
-  return { ok: false, error: 'No free rune page. Delete one in the client, or turn on "Replace current rune page" in Settings.' };
+  return { ok: false, error: 'No free rune page. Delete one in the client, or turn on "Replace a rune page when all are full" in Settings.' };
 }
 
 async function importItemSet(championId, title, blocks) {

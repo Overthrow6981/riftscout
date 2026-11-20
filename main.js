@@ -4,7 +4,7 @@
 
 const { app, BrowserWindow, shell, dialog, screen, globalShortcut } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const { startServer, getLiveData, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy } = require('./server');
+const { startServer, getLiveData, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy, onChampSelectStart } = require('./server');
 const updates = require('./updater');
 
 const OVERLAY_W = 300;
@@ -62,6 +62,19 @@ async function boot() {
 
   setupOverlay();
   setupUpdates();
+  onChampSelectStart(bringToFront);
+}
+
+// Sodra champ select begin: RiftScout na vore (soos Blitz), sodat jy dadelik jou picks en runes sien
+function bringToFront() {
+  if (!win || win.isDestroyed() || !getPrefs().openOnChampSelect) return;
+  if (win.isMinimized()) win.restore();
+  win.show();
+  // Windows laat 'n ander app nie sommer die fokus vat nie; kortstondig "altyd bo" werk wel
+  win.setAlwaysOnTop(true);
+  win.moveTop();
+  win.focus();
+  setTimeout(() => { if (win && !win.isDestroyed()) win.setAlwaysOnTop(false); }, 600);
 }
 
 // ---------- In-game oorleg ----------
