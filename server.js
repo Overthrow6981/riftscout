@@ -588,7 +588,8 @@ async function scoutPlayer(region, p, viaClient) {
     if (viaClient) {
       const [rk, sm] = await Promise.allSettled([lcu.ranked(p.puuid), lcu.summonerByPuuid(p.puuid)]);
       if (rk.status === 'rejected' && rk.reason && rk.reason.lcuClosed) throw rk.reason;
-      const list = rk.status === 'fulfilled' ? rk.value : [];
+      // Die kliënt gee nie ander spelers se verliese nie (altyd 0) – dan wys ons net wins, nie 'n win rate nie
+      const list = (rk.status === 'fulfilled' ? rk.value : []).map((e) => (p.puuid !== me.puuid && !e.losses ? { ...e, losses: null } : e));
       const sum = sm.status === 'fulfilled' ? sm.value : null;
       return {
         solo: pickQueue(list, 'RANKED_SOLO_5x5'), flex: pickQueue(list, 'RANKED_FLEX_SR'),
@@ -626,14 +627,15 @@ async function scoutPlayer(region, p, viaClient) {
     }
   }
   const r = base.solo || base.flex;
-  const games = r ? r.wins + r.losses : 0;
+  const lossesKnown = !!r && r.losses != null;
+  const games = r && lossesKnown ? r.wins + r.losses : 0;
   const wr = games ? r.wins / games : 0;
   const tags = [];
   if (r && r.hotStreak) tags.push('Hot streak');
   if (mastery && mastery.points === 0) tags.push('First time on champ');
   else if (mastery && mastery.points < 10000) tags.push('New on champ');
   else if (mastery && mastery.points >= 300000) tags.push('One-trick');
-  if (base.level != null && base.level < 60 && games >= 15 && wr >= 0.65) tags.push('Possible smurf');
+  if (lossesKnown && base.level != null && base.level < 60 && games >= 15 && wr >= 0.65) tags.push('Possible smurf');
   return { ...p, riotId: p.riotId || base.riotId || '', level: base.level, solo: base.solo, flex: base.flex, mastery, tags };
 }
 
@@ -695,7 +697,12 @@ async function computeLobby() {
       if (known) { if (!known.spells) known.spells = liveSpells(lp); continue; }
       const riotId = lp.riotId || (lp.riotIdGameName ? `${lp.riotIdGameName}#${lp.riotIdTagLine}` : '');
       const hash = riotId.lastIndexOf('#');
-      if (hash < 1) continue;
+      const livePosition = builds.ROLES.includes(lp.position) ? lp.position : '';
+      if (hash < 1) {
+        // Naam versteek (bv. streamer mode): wys die speler sonder scouting
+        participants.push({ hidden: true, puuid: '', riotId: '', championId, teamId, position: livePosition, spells: liveSpells(lp) });
+        continue;
+      }
       const gameName = riotId.slice(0, hash);
       const tagLine = riotId.slice(hash + 1);
       try {
@@ -704,18 +711,18 @@ async function computeLobby() {
           const acc = await riot(accountRoute(region), `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`);
           return acc.puuid;
         });
-        if (puuid && !participants.some((p) => p.puuid === puuid)) participants.push({ puuid, riotId, championId, teamId, position: '', spells: liveSpells(lp) });
+        if (puuid && !participants.some((p) => p.puuid === puuid)) participants.push({ puuid, riotId, championId, teamId, position: livePosition, spells: liveSpells(lp) });
       } catch { /* speler nie gevind nie */ }
     }
   }
   if (!participants.length) return { phase, teams: [], waiting: true };
-  const key = `game:${session && session.gameId ? session.gameId : ''}:` + participants.map((p) => p.puuid).sort().join(',');
+  const key = `game:${session && session.gameId ? session.gameId : ''}:` + participants.map((p) => p.puuid || `h${p.teamId}:${p.championId}`).sort().join(',');
   if (lobby.key === key && lobby.data) return lobby.data;
 
   const liveMe = live.inGame && live.data.activePlayer ? String(live.data.activePlayer.riotId || '').toLowerCase() : '';
-  const players = await Promise.all(participants.map((p) => scoutPlayer(region, {
+  const players = await Promise.all(participants.map((p) => (p.hidden ? { ...p, me: false, tags: [] } : scoutPlayer(region, {
     ...p, me: (viaClient && !!id.puuid && p.puuid === id.puuid) || (!!liveMe && !!p.riotId && p.riotId.toLowerCase() === liveMe),
-  }, viaClient)));
+  }, viaClient))));
   // Rolle: wat die spel self sê, anders geraai uit wat elke champion gewoonlik speel
   const livePos = {};
   if (live.inGame) for (const p of live.data.allPlayers || []) if (p.position) livePos[championIdFromLive(p, dd)] = p.position;
@@ -821,9 +828,9 @@ async function overlayData() {
       scout: (() => {
         const enemy = lobby.data && lobby.data.phase === 'InGame'
           ? lobby.data.teams.flatMap((t) => t.players).find((p) => p.championId === vsId && p.teamId !== lobby.data.myTeamId) : null;
-        if (!enemy) return null;
+        if (!enemy || enemy.hidden) return null;
         const r = enemy.solo || enemy.flex;
-        const g = r ? r.wins + r.losses : 0;
+        const g = r && r.losses != null ? r.wins + r.losses : 0;
         return {
           rank: tierText(r), wr: g ? r.wins / g : null, games: g,
           mastery: enemy.mastery ? enemy.mastery.points : null, tags: enemy.tags,
@@ -928,7 +935,7 @@ app.get('/api/profile', wrap(async (req, res) => {
         tagLine: s.tagLine || tagLine,
         level: s.summonerLevel,
         profileIconId: s.profileIconId,
-        ranked: rk.status === 'fulfilled' ? rk.value : [],
+        ranked: (rk.status === 'fulfilled' ? rk.value : []).map((e) => (s.puuid !== m.puuid && !e.losses ? { ...e, losses: null } : e)),
         mastery: ms.status === 'fulfilled' ? ms.value.slice(0, 5) : [],
         source: 'client',
       };

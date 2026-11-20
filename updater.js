@@ -4,7 +4,7 @@
 // - Word 'n update later gevind, of is jy besig, wys die app 'n balk met "Restart now";
 //   anders installeer dit vanself wanneer jy RiftScout toemaak.
 const STARTUP_WINDOW_MS = 15 * 60 * 1000; // so lank ná oopmaak installeer ons sonder om te vra
-const CHECK_EVERY_MS = 60 * 60 * 1000;
+const CHECK_EVERY_MS = 20 * 60 * 1000;
 
 function setupUpdates({ updater, isBusy, onState, beforeInstall, log = console }) {
   const startedAt = Date.now();
