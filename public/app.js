@@ -22,14 +22,26 @@ const store = {
 // ---------- Data Dragon ----------
 async function loadDDragon() {
   try {
-    const r = await fetch('/api/ddragon');
-    if (r.ok) { dd = await r.json(); return; }
+    const r = await fetch('/api/ddragon', { signal: AbortSignal.timeout(25000) });
+    if (r.ok) { dd = await r.json(); return true; }
   } catch { /* val terug na direkte laai */ }
+  if (dd && dd.version) return false; // hou wat ons het
   try {
-    const versions = await (await fetch('https://ddragon.leagueoflegends.com/api/versions.json')).json();
-    dd = { version: versions[0], spells: {}, runes: {}, champions: {}, items: {} };
+    const versions = await (await fetch('https://ddragon.leagueoflegends.com/api/versions.json', { signal: AbortSignal.timeout(10000) })).json();
+    dd = { version: versions[0], spells: {}, runes: {}, champions: {}, items: {}, missing: true };
   } catch {
-    dd = { version: '15.1.1', spells: {}, runes: {}, champions: {}, items: {} };
+    dd = { version: '15.1.1', spells: {}, runes: {}, champions: {}, items: {}, missing: true };
+  }
+  return false;
+}
+// As Data Dragon (champions, runes, items) nie gelaai het nie: probeer elke 30 s weer en teken dan alles oor
+async function retryDDragon() {
+  if (!dd || !dd.missing) return;
+  if (await loadDDragon()) {
+    renderChampGrid();
+    if (buildData) renderBuild();
+    csPanelHtml = '';
+    if (current) { renderProfile(current.profile); renderSummary(); $('matches').innerHTML = loadedMatches.map(renderMatch).join(''); }
   }
 }
 const champImg = (name) => `${CDN}/${dd.version}/img/champion/${encodeURIComponent(name)}.png`;
@@ -154,7 +166,7 @@ function renderProfile(p) {
     const tier = e.tier.charAt(0) + e.tier.slice(1).toLowerCase();
     const showDiv = !['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(e.tier);
     return `<div class="rank"><div class="q">${order[q]}</div>
-      <div class="tier">${tier}${showDiv ? ' ' + e.rank : ''} · ${e.leaguePoints} LP</div>
+      <div class="tier">${esc(tier)}${showDiv ? ' ' + esc(e.rank) : ''} · ${e.leaguePoints} LP</div>
       <div class="wl">${e.losses == null ? `${e.wins} wins` : `${e.wins}W ${e.losses}L · ${games ? pct(e.wins / games) : '–'} win rate`}${e.hotStreak ? ' · 🔥 streak' : ''}</div></div>`;
   }).join('');
   const mastery = p.mastery.map((m) => {
@@ -205,12 +217,13 @@ function renderSummary() {
   const champs = {};
   for (const m of games) {
     k += m.me.kills; d += m.me.deaths; a += m.me.assists; kp += m.me.killParticipation;
-    const c = (champs[m.me.championName] ||= { games: 0, wins: 0 });
+    // Per champion-ID: wedstryde uit die League-kliënt het nie 'n championName nie
+    const c = (champs[m.me.championId] ||= { games: 0, wins: 0, me: m.me });
     c.games++; if (m.me.win) c.wins++;
   }
   const n = games.length;
-  const top = Object.entries(champs).sort((x, y) => y[1].games - x[1].games).slice(0, 3)
-    .map(([name, s]) => [name, s, games.find((m) => m.me.championName === name).me]);
+  const top = Object.values(champs).sort((x, y) => y.games - x.games).slice(0, 3)
+    .map((s) => [champName(s.me.championId) !== `Champion ${s.me.championId}` ? champName(s.me.championId) : (s.me.championName || ''), s, s.me]);
   $('summary').innerHTML = `
     <div class="card"><h3>Last ${n} games</h3>
       <div class="summary">
@@ -256,7 +269,7 @@ function renderMatch(m) {
   return `
     <div class="match ${cls}">
       <div class="meta">
-        <div class="queue">${QUEUES[m.queueId] || m.gameMode}</div>
+        <div class="queue">${esc(QUEUES[m.queueId] || m.gameMode)}</div>
         <div>${timeAgo(m.endedAt)}</div>
         <div class="result">${result}</div>
         <div>${fmtDur(m.duration)}</div>
@@ -283,6 +296,7 @@ function renderMatch(m) {
 $('matches').addEventListener('click', (e) => {
   const a = e.target.closest('a[data-id]');
   if (!a || !current) return;
+  viewingOther = true;
   $('riotId').value = a.dataset.id;
   window.scrollTo({ top: 0, behavior: 'smooth' });
   search(current.region, a.dataset.id);
@@ -366,9 +380,10 @@ function rankHtml(p) {
   if (!r) return '<span class="tier">Unranked</span>';
   const tier = r.tier.charAt(0) + r.tier.slice(1).toLowerCase();
   const div = ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(r.tier) ? '' : ' ' + r.rank;
-  if (r.losses == null) return `<span class="tier t-${r.tier.toLowerCase()}">${tier}${div}</span> ${r.lp} LP${p.solo ? '' : ' (Flex)'} · ${r.wins} wins`;
+  const tcls = esc(r.tier.toLowerCase());
+  if (r.losses == null) return `<span class="tier t-${tcls}">${esc(tier + div)}</span> ${r.lp} LP${p.solo ? '' : ' (Flex)'} · ${r.wins} wins`;
   const g = r.wins + r.losses;
-  return `<span class="tier t-${r.tier.toLowerCase()}">${tier}${div}</span> ${r.lp} LP${p.solo ? '' : ' (Flex)'}
+  return `<span class="tier t-${tcls}">${esc(tier + div)}</span> ${r.lp} LP${p.solo ? '' : ' (Flex)'}
     · ${r.wins}W ${r.losses}L${g ? ` · <b class="${r.wins / g >= 0.5 ? 'good' : 'bad'}">${pct(r.wins / g)}</b>` : ''}`;
 }
 
@@ -532,7 +547,9 @@ function renderChampGrid() {
   const list = champList().filter((c) => !q || c.name.toLowerCase().includes(q));
   $('champGrid').innerHTML = list.map((c) => `<button class="cg" data-key="${c.key}" title="${esc(c.name)}">
       <img src="${champImg(c.id)}" alt="" loading="lazy"><span>${esc(c.name)}</span></button>`).join('')
-    || '<div class="notice">No champion found.</div>';
+    || (dd.missing && !Object.keys(dd.champions || {}).length
+      ? '<div class="notice error">Couldn\'t load the champion list (Riot\'s Data Dragon isn\'t reachable). Check your internet – RiftScout keeps trying.</div>'
+      : '<div class="notice">No champion found.</div>');
 }
 function showGrid(show) {
   $('champGrid').classList.toggle('hidden', !show);
@@ -546,15 +563,20 @@ $('champGrid').addEventListener('click', (e) => {
   if (b) openBuild(Number(b.dataset.key), '', false, null);
 });
 
+let buildReq = 0;
 async function openBuild(champKey, role, strict, vs) {
+  const req = ++buildReq; // as jy vinnig tussen champions wissel, wen net die laaste antwoord
   buildChamp = champKey;
   $('champSearch').value = '';
   showGrid(false);
   $('buildView').innerHTML = '<div class="notice">Loading build…</div>';
   try {
-    buildData = await api(`/api/builds/champion/${champKey}?role=${encodeURIComponent(role || '')}${strict ? '&strict=1' : ''}${vs ? `&vs=${vs}` : ''}`);
+    const data = await api(`/api/builds/champion/${champKey}?role=${encodeURIComponent(role || '')}${strict ? '&strict=1' : ''}${vs ? `&vs=${vs}` : ''}`);
+    if (req !== buildReq) return;
+    buildData = data;
     renderBuild();
   } catch (err) {
+    if (req !== buildReq) return;
     $('buildView').innerHTML = `<div class="notice error">${esc(err.message)}</div>`;
   }
 }
@@ -824,9 +846,12 @@ async function renderCsPanel(cs) {
   const panel = $('csPanel');
   if (!cs) { panel.classList.add('hidden'); csPanelHtml = ''; return; }
   const er = cs.enemyRoles || {};
-  const enemies = (cs.enemies || []).map((id) => `<button type="button" class="ep ${id === cs.vs ? 'lane' : ''}" data-ep="${id}"
+  // Sonder lanes (ARAM, Arena) is daar geen lane-teenstander om te kies nie: net die champions
+  const enemies = (cs.enemies || []).map((id) => (!cs.role
+    ? `<span class="ep" title="${esc(champName(id))}"><img src="${champIcon(id)}" alt=""><span>${esc(champName(id))}</span></span>`
+    : `<button type="button" class="ep ${id === cs.vs ? 'lane' : ''}" data-ep="${id}"
       title="${id === cs.vs ? `Your lane opponent${cs.vsManual ? ' (you picked this)' : ''}` : `Click if ${esc(champName(id))} is your lane opponent`}">
-      <img src="${champIcon(id)}" alt=""><span>${esc(champName(id))}<small>${esc(id === cs.vs && cs.role ? ROLE_NAMES[cs.role] : ROLE_NAMES[er[id]] || '')}</small></span></button>`).join('');
+      <img src="${champIcon(id)}" alt=""><span>${esc(champName(id))}<small>${esc(id === cs.vs ? ROLE_NAMES[cs.role] : ROLE_NAMES[er[id]] || '')}</small></span></button>`)).join('');
   const roleName = esc(ROLE_NAMES[cs.role] || '');
   const fixHint = cs.role && (cs.enemies || []).length ? `<div class="sub ep-hint">${cs.vs
     ? `Wrong lane opponent? Click the right enemy above.${cs.vsManual ? ' <a href="#" data-ep-reset="1">Use RiftScout\'s guess</a>' : ''}`
@@ -962,11 +987,14 @@ async function pollUpdate() {
   } catch { /* ignore */ }
 
   const [hRegion, hId] = location.hash.slice(1).split('/');
-  const region = hRegion || store.get('lastRegion') || 'na1';
-  const riotId = hId ? decodeURIComponent(hId) : store.get('lastRiotId') || '';
+  const okRegion = (r) => (r && REGION_LABEL[r] ? r : '');
+  const region = okRegion(hRegion) || okRegion(store.get('lastRegion')) || 'na1';
+  let riotId = store.get('lastRiotId') || '';
+  let fromHash = false;
+  if (hId && okRegion(hRegion)) { try { riotId = decodeURIComponent(hId); fromHash = true; } catch { /* stukkende adres */ } }
   $('region').value = region;
   $('riotId').value = riotId;
-  if (hId) { viewingOther = true; search(region, riotId); }
+  if (fromHash) { viewingOther = true; search(region, riotId); }
   await pollMe();         // vul jou naam en bediener in en laai jou profiel
   setInterval(pollMe, 5000);
 
@@ -982,4 +1010,5 @@ async function pollUpdate() {
   setInterval(pollLobby, 4000);
   pollUpdate();
   setInterval(pollUpdate, 2000);
+  setInterval(retryDDragon, 30000);
 })();

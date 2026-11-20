@@ -415,3 +415,37 @@ ol.counters .few { color: var(--muted); opacity: .7; }
 .cs-more summary { cursor: pointer; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; padding: 4px 0 8px; }
 .cs-more summary small { text-transform: none; letter-spacing: 0; font-weight: 500; }
 .cs-more[open] summary { color: var(--text); }
+
+/* ---------- Kleiner skerms (venster smal gemaak, tablet, foon) ---------- */
+@media (max-width: 900px) {
+  .topbar { flex-wrap: wrap; gap: 8px 12px; padding: 10px 14px; }
+  .tabs { order: 3; width: 100%; overflow-x: auto; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: none; white-space: nowrap; }
+  .me-chip { max-width: 55vw; }
+}
+@media (max-width: 560px) {
+  main { padding: 16px 10px 40px; }
+  .brand { font-size: 16px; }
+  .settings-btn { padding: 6px 10px; }
+  .me-chip .me-region { display: none; }
+  .search { flex-wrap: wrap; }
+  .search input { min-width: 0; flex: 1 1 60%; }
+  .search button { flex: 1 1 100%; }
+  .card { padding: 12px; }
+  .match { padding: 10px; }
+  .players { font-size: 12px; }
+  ol.counters li, .ct-head { grid-template-columns: 18px 26px minmax(60px, 1fr) 50px 50px 40px; gap: 6px; }
+  ol.counters .cval .cbar { display: none; }
+  ol.counters .cval b { min-width: 0; }
+  ol.counters li { padding: 6px; }
+  .ep { font-size: 12px; }
+  .bh-actions { flex-direction: row; width: 100%; }
+  .bh-actions button { flex: 1; }
+  .skillgrid { display: block; overflow-x: auto; }
+  .items-grid { overflow-x: auto; }
+  #allChamps { white-space: nowrap; flex: none; padding: 0 10px; }
+  .build-bar input { min-width: 0; }
+  .modal-box label.inline { display: block !important; }
+  .modal-box label.inline select { display: block; width: 100%; margin-top: 4px; }
+}
