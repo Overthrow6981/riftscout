@@ -199,6 +199,90 @@ function simplifyMatch(match, puuid) {
   };
 }
 
+// ---------- Wedstryde uit die League-kliënt (sonder sleutel) ----------
+const LANE_TO_POS = { TOP: 'TOP', JUNGLE: 'JUNGLE', MIDDLE: 'MIDDLE', MID: 'MIDDLE' };
+function lcuPosition(t) {
+  const lane = String((t && t.lane) || '').toUpperCase();
+  const role = String((t && t.role) || '').toUpperCase();
+  if (LANE_TO_POS[lane]) return LANE_TO_POS[lane];
+  if (lane === 'BOTTOM' || lane === 'BOT') return role.includes('SUPPORT') ? 'UTILITY' : 'BOTTOM';
+  return '';
+}
+
+// Skakel die kliënt se wedstrydformaat om na dieselfde vorm as simplifyMatch
+function simplifyLcuGame(g, puuid) {
+  const who = {};
+  for (const pi of g.participantIdentities || []) who[pi.participantId] = pi.player || {};
+  const teamKills = {};
+  for (const p of g.participants || []) teamKills[p.teamId] = (teamKills[p.teamId] || 0) + ((p.stats && p.stats.kills) || 0);
+  const players = (g.participants || []).map((p) => {
+    const st = p.stats || {};
+    const pl = who[p.participantId] || {};
+    const kills = st.kills || 0;
+    const assists = st.assists || 0;
+    return {
+      puuid: pl.puuid || '',
+      championId: p.championId,
+      placement: st.subteamPlacement || 0,
+      subteam: st.playerSubteamId || 0,
+      name: pl.gameName || pl.summonerName || 'Unknown',
+      tag: pl.tagLine || '',
+      teamId: p.teamId,
+      championName: '',
+      champLevel: st.champLevel || 0,
+      kills, deaths: st.deaths || 0, assists,
+      cs: (st.totalMinionsKilled || 0) + (st.neutralMinionsKilled || 0),
+      gold: st.goldEarned || 0,
+      damage: st.totalDamageDealtToChampions || 0,
+      vision: st.visionScore || 0,
+      position: lcuPosition(p.timeline),
+      items: [st.item0, st.item1, st.item2, st.item3, st.item4, st.item5, st.item6].map((x) => x || 0),
+      spells: [p.spell1Id, p.spell2Id],
+      keystone: st.perk0 || null,
+      secondaryStyle: st.perkSubStyle || null,
+      killParticipation: teamKills[p.teamId] ? (kills + assists) / teamKills[p.teamId] : 0,
+      largestMultiKill: st.largestMultiKill || 0,
+      win: !!st.win,
+    };
+  });
+  const duration = g.gameDuration > 20000 ? Math.round(g.gameDuration / 1000) : (g.gameDuration || 0);
+  return {
+    id: `${g.platformId || 'LCU'}_${g.gameId}`,
+    queueId: g.queueId,
+    gameMode: g.gameMode,
+    duration,
+    endedAt: (g.gameCreation || 0) + duration * 1000,
+    remake: (g.participants || []).some((p) => p.stats && p.stats.gameEndedInEarlySurrender),
+    me: players.find((p) => p.puuid === puuid) || null,
+    players,
+  };
+}
+
+// Volledige wedstryd uit die kliënt; verander nooit nie -> stoor op skyf
+async function getClientGame(gameId) {
+  const file = path.join(CACHE_DIR, `LCU_${Number(gameId)}.json`);
+  if (fs.existsSync(file)) {
+    try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { /* lees weer */ }
+  }
+  const g = await lcu.game(gameId);
+  if (g && (g.participants || []).length > 1) fs.writeFileSync(file, JSON.stringify(g));
+  return g;
+}
+
+// Die kliënt se puuid's is gewone UUID's; Riot se API gee lang versleutelde ID's
+const isClientPuuid = (p) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p);
+const REGION_NAMES = { na1: 'NA', euw1: 'EUW', eun1: 'EUNE', kr: 'KR', br1: 'BR', la1: 'LAN', la2: 'LAS', oc1: 'OCE', tr1: 'TR', ru: 'RU', jp1: 'JP', me1: 'ME', sg2: 'SEA', tw2: 'TW', vn2: 'VN' };
+
+// Sonder sleutel: die League-kliënt moet oop wees, en net spelers op jou eie bediener
+async function requireClient(region) {
+  const m = await whoAmI();
+  if (!m.connected) throw httpError(409, 'Open the League client to look up players – no API key needed. (Or add an optional Riot API key in Settings.)');
+  if (region && m.region && region !== m.region) {
+    throw httpError(400, `Without a Riot API key RiftScout can look up players on your own server (${REGION_NAMES[m.region] || m.region}) only. Add an optional key in Settings to search other servers.`);
+  }
+  return m;
+}
+
 // ---------- Live Client Data API ----------
 function getLiveData() {
   return new Promise((resolve) => {
@@ -236,7 +320,7 @@ async function getDDragon() {
       for (const slot of style.slots) for (const r of slot.runes) runes[r.id] = { name: r.name, icon: r.icon };
     }
     const champions = {};
-    for (const c of Object.values(champsRaw.data)) champions[c.key] = { id: c.id, name: c.name };
+    for (const c of Object.values(champsRaw.data)) champions[c.key] = { id: c.id, name: c.name, tags: c.tags || [] };
     const full = builds.itemsFromDDragon(itemsRaw);
     const items = {};
     for (const [id, it] of Object.entries(full)) items[id] = { name: it.name, gold: it.gold };
@@ -390,8 +474,10 @@ async function lcuTick() {
     const st = await lcu.state();
     if (st.champSelect) st.champSelect.vs = enemyLaner(st.champSelect.enemies || [], st.champSelect.role);
     lcuState = st;
-    if (st.connected) whoAmI().catch(() => {}); // tel jou rekening en bediener op sodra League oop is
-    if (API_KEY && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
+    // Hou "is League oop?" dadelik op datum (en tel jou rekening en bediener op sodra League oopmaak)
+    if (!!st.connected !== !!me.connected) me.at = 0;
+    if (st.connected || me.at === 0) whoAmI().catch(() => {});
+    if ((API_KEY || st.connected) && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
     if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; return; }
     const cs = lcuState.champSelect;
     if (!cs || !cs.championId || !cs.locked || !getPrefs().autoImport) return;
@@ -433,34 +519,80 @@ async function whoAmI() {
   return me;
 }
 
-const roleMapOf = (championId) => Object.fromEntries(db.rolesFor(championId).map((r) => [r.role, r.games]));
+// Watter rolle 'n champion gewoonlik speel: uit die build-data, anders uit Riot se champion-tipes.
+// Smite (11) beteken jungle; iemand sonder Smite is nie die jungler nie.
+const TAG_PRIOR = {
+  Marksman: { BOTTOM: 6 }, Support: { UTILITY: 6 }, Mage: { MIDDLE: 3, UTILITY: 1 },
+  Assassin: { MIDDLE: 3, JUNGLE: 1 }, Fighter: { TOP: 3, JUNGLE: 1 }, Tank: { TOP: 2, UTILITY: 1, JUNGLE: 1 },
+};
+function roleMapOf(championId, spells) {
+  const known = Array.isArray(spells) && spells.some(Boolean);
+  if (known && spells.includes(11)) return { JUNGLE: 1 };
+  let m = Object.fromEntries(db.rolesFor(championId).map((r) => [r.role, r.games]));
+  if (!Object.values(m).some(Boolean)) {
+    m = {};
+    const tags = (DD && DD.champions[championId] && DD.champions[championId].tags) || [];
+    for (const t of tags) for (const [r, w] of Object.entries(TAG_PRIOR[t] || {})) m[r] = (m[r] || 0) + w;
+  }
+  if (known) delete m.JUNGLE;
+  return m;
+}
+const liveSpells = (lp) => {
+  const ss = (lp && lp.summonerSpells) || {};
+  const names = [ss.summonerSpellOne, ss.summonerSpellTwo].map((x) => String((x && (x.rawDisplayName || x.displayName)) || ''));
+  return names.some(Boolean) ? names.map((n) => (/smite/i.test(n) ? 11 : -1)) : null;
+};
 
-async function scoutPlayer(region, p) {
+// Scouting gebruik die League-kliënt: geen sleutel nodig nie, en sy speler-ID's (puuid) pas by die kliënt se data.
+// (Riot se API gebruik ander, versleutelde puuid's – die twee mag nie gemeng word nie.)
+// Net as die kliënt toe is en jy 'n sleutel het, scout ons via Riot se API.
+const pickQueue = (list, q) => {
+  const e = (list || []).find((x) => x.queueType === q);
+  return e ? { tier: e.tier, rank: e.rank, lp: e.leaguePoints, wins: e.wins, losses: e.losses, hotStreak: !!e.hotStreak } : null;
+};
+
+async function scoutPlayer(region, p, viaClient) {
   lastUserActivity = Date.now(); // die versamelaar wag terwyl ons scout
-  const base = await cached(`scout:${region}:${p.puuid}`, 10 * 60e3, async () => {
+  const base = await cached(`scout:${viaClient ? 'client' : region}:${p.puuid}`, 10 * 60e3, async () => {
+    if (viaClient) {
+      const [rk, sm] = await Promise.allSettled([lcu.ranked(p.puuid), lcu.summonerByPuuid(p.puuid)]);
+      if (rk.status === 'rejected' && rk.reason && rk.reason.lcuClosed) throw rk.reason;
+      const list = rk.status === 'fulfilled' ? rk.value : [];
+      const sum = sm.status === 'fulfilled' ? sm.value : null;
+      return {
+        solo: pickQueue(list, 'RANKED_SOLO_5x5'), flex: pickQueue(list, 'RANKED_FLEX_SR'),
+        level: sum ? sum.summonerLevel : null,
+        riotId: sum && sum.gameName ? `${sum.gameName}#${sum.tagLine}` : '',
+      };
+    }
     const [entries, summoner] = await Promise.allSettled([
       riot(region, `/lol/league/v4/entries/by-puuid/${p.puuid}`),
       riot(region, `/lol/summoner/v4/summoners/by-puuid/${p.puuid}`),
     ]);
     if (entries.status === 'rejected' && [401, 403].includes(entries.reason.status)) throw entries.reason;
     const list = entries.status === 'fulfilled' ? entries.value : [];
-    const pick = (q) => {
-      const e = list.find((x) => x.queueType === q);
-      return e ? { tier: e.tier, rank: e.rank, lp: e.leaguePoints, wins: e.wins, losses: e.losses, hotStreak: !!e.hotStreak } : null;
-    };
-    return { solo: pick('RANKED_SOLO_5x5'), flex: pick('RANKED_FLEX_SR'), level: summoner.status === 'fulfilled' ? summoner.value.summonerLevel : null };
+    return { solo: pickQueue(list, 'RANKED_SOLO_5x5'), flex: pickQueue(list, 'RANKED_FLEX_SR'), level: summoner.status === 'fulfilled' ? summoner.value.summonerLevel : null, riotId: '' };
   });
   let mastery = null;
   if (p.championId) {
-    mastery = await cached(`mastery:${region}:${p.puuid}:${p.championId}`, 10 * 60e3, async () => {
-      try {
-        const m = await riot(region, `/lol/champion-mastery/v4/champion-masteries/by-puuid/${p.puuid}/by-champion/${p.championId}`);
-        return { level: m.championLevel, points: m.championPoints };
-      } catch (err) {
-        if (err.status === 404) return { level: 0, points: 0 }; // nog nooit gespeel nie
-        throw err;
+    if (viaClient) {
+      const list = await cached(`cmastery:${p.puuid}`, 10 * 60e3, () => lcu.masteries(p.puuid)).catch(() => null);
+      // 'n Leë lys beteken eerder "nie beskikbaar nie" as "nog nooit iets gespeel nie"
+      if (list && list.length) {
+        const m = list.find((x) => x.championId === p.championId);
+        mastery = m ? { level: m.level, points: m.points } : { level: 0, points: 0 };
       }
-    }).catch(() => null);
+    } else {
+      mastery = await cached(`mastery:${region}:${p.puuid}:${p.championId}`, 10 * 60e3, async () => {
+        try {
+          const m = await riot(region, `/lol/champion-mastery/v4/champion-masteries/by-puuid/${p.puuid}/by-champion/${p.championId}`);
+          return { level: m.championLevel, points: m.championPoints };
+        } catch (err) {
+          if (err.status === 404) return { level: 0, points: 0 }; // nog nooit gespeel nie
+          throw err;
+        }
+      }).catch(() => null);
+    }
   }
   const r = base.solo || base.flex;
   const games = r ? r.wins + r.losses : 0;
@@ -471,7 +603,7 @@ async function scoutPlayer(region, p) {
   else if (mastery && mastery.points < 10000) tags.push('New on champ');
   else if (mastery && mastery.points >= 300000) tags.push('One-trick');
   if (base.level != null && base.level < 60 && games >= 15 && wr >= 0.65) tags.push('Possible smurf');
-  return { ...p, level: base.level, solo: base.solo, flex: base.flex, mastery, tags };
+  return { ...p, riotId: p.riotId || base.riotId || '', level: base.level, solo: base.solo, flex: base.flex, mastery, tags };
 }
 
 function championIdFromLive(p, dd) {
@@ -481,9 +613,12 @@ function championIdFromLive(p, dd) {
   return 0;
 }
 
+const IN_GAME_PHASES = ['GameStart', 'InProgress', 'Reconnect'];
+
 async function computeLobby() {
   const phase = lcuState.phase;
-  if (!API_KEY) return { phase, teams: [], error: 'Add a Riot API key in Settings to scout the players in your games.' };
+  const viaClient = !!lcuState.connected;
+  if (!viaClient && !API_KEY) return { phase, teams: [], error: 'Open the League client – RiftScout scouts the players in your games from there.' };
   const id = await whoAmI();
   const region = id.region || crawlRegion();
 
@@ -493,7 +628,7 @@ async function computeLobby() {
     const key = 'cs:' + allies.map((a) => `${a.puuid}:${a.championId}`).join(',');
     if (lobby.key === key && lobby.data) return lobby.data;
     const players = await Promise.all(allies.map((a) => (a.puuid
-      ? scoutPlayer(region, { puuid: a.puuid, riotId: a.gameName ? `${a.gameName}#${a.tagLine}` : '', championId: a.championId, teamId: 100, role: a.role, me: a.me })
+      ? scoutPlayer(region, { puuid: a.puuid, riotId: a.gameName ? `${a.gameName}#${a.tagLine}` : '', championId: a.championId, teamId: 100, role: a.role, me: a.me }, true)
       : { hidden: true, championId: a.championId, teamId: 100, role: a.role, me: a.me, tags: [] })));
     const data = { phase: 'ChampSelect', region, myTeamId: 100, teams: [{ teamId: 100, mine: true, players }], hiddenNames: allies.some((a) => !a.puuid && !a.me), at: Date.now() };
     lobby = { key, data };
@@ -502,67 +637,70 @@ async function computeLobby() {
 
   // --- In die spel (vanaf die laaiskerm) ---
   const live = await getLiveData();
-  if (!['GameStart', 'InProgress', 'Reconnect'].includes(phase) && !live.inGame) {
+  if (!IN_GAME_PHASES.includes(phase) && !live.inGame) {
     // Nie in 'n spel nie: wys die laaste lobby (bv. ná die spel) as dit daar is
-    if (id.puuid) memCache.delete(`spectate:${id.puuid}`);
     return lobby.data && lobby.data.phase === 'InGame' ? { ...lobby.data, phase, stale: true } : { phase, teams: [] };
   }
   const dd = await getDDragon().catch(() => DD);
-  let game = null;
-  if (id.puuid) {
-    // 404 = Riot ken die spel (nog) nie (bv. laaiskerm): probeer elke 10s weer; 'n gevonde spel word 60s onthou
-    const k = `spectate:${id.puuid}`;
-    const hit = memCache.get(k);
-    if (hit && Date.now() - hit.t < (hit.v ? 60e3 : 10e3)) game = hit.v;
-    else {
-      try { game = await riot(region, `/lol/spectator/v5/active-games/by-summoner/${id.puuid}`); }
-      catch (err) { if (![404, 400].includes(err.status)) throw err; game = null; }
-      memCache.set(k, { t: Date.now(), v: game });
-    }
-  }
+  let session = null;
   let participants = [];
-  if (game) {
-    participants = (game.participants || []).filter((p) => !p.bot && p.puuid)
-      .map((p) => ({ puuid: p.puuid, riotId: p.riotId || '', championId: p.championId, teamId: p.teamId }));
-  } else if (live.inGame) {
-    // Bv. custom games: spectator ken dit nie; gebruik die spel se eie lys en soek die spelers op
-    for (const p of live.data.allPlayers || []) {
-      if (p.isBot) continue;
-      const riotId = p.riotId || (p.riotIdGameName ? `${p.riotIdGameName}#${p.riotIdTagLine}` : '');
+  if (viaClient) {
+    session = await lcu.gameSession().catch(() => null);
+    if (session) participants = session.players.map((p) => ({ puuid: p.puuid, riotId: '', championId: p.championId, teamId: p.teamId, position: p.position, spells: p.spells }));
+  }
+  // Die spel se eie spelerlys vul aan wat ontbreek (bv. custom games, of as die kliënt iemand nie gee nie)
+  if (live.inGame) {
+    for (const lp of live.data.allPlayers || []) {
+      if (lp.isBot) continue;
+      const teamId = lp.team === 'CHAOS' ? 200 : 100;
+      const championId = championIdFromLive(lp, dd);
+      const known = participants.find((p) => p.teamId === teamId && p.championId === championId && championId);
+      if (known) { if (!known.spells) known.spells = liveSpells(lp); continue; }
+      const riotId = lp.riotId || (lp.riotIdGameName ? `${lp.riotIdGameName}#${lp.riotIdTagLine}` : '');
       const hash = riotId.lastIndexOf('#');
       if (hash < 1) continue;
+      const gameName = riotId.slice(0, hash);
+      const tagLine = riotId.slice(hash + 1);
       try {
-        const acc = await cached(`acct:${riotId.toLowerCase()}`, 60 * 60e3, () => riot(accountRoute(region),
-          `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(riotId.slice(0, hash))}/${encodeURIComponent(riotId.slice(hash + 1))}`));
-        participants.push({ puuid: acc.puuid, riotId, championId: championIdFromLive(p, dd), teamId: p.team === 'CHAOS' ? 200 : 100 });
+        const puuid = await cached(`puuidOf:${viaClient ? 'client' : region}:${riotId.toLowerCase()}`, 60 * 60e3, async () => {
+          if (viaClient) { const s = await lcu.lookupRiotId(gameName, tagLine); return s ? s.puuid : null; }
+          const acc = await riot(accountRoute(region), `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`);
+          return acc.puuid;
+        });
+        if (puuid && !participants.some((p) => p.puuid === puuid)) participants.push({ puuid, riotId, championId, teamId, position: '', spells: liveSpells(lp) });
       } catch { /* speler nie gevind nie */ }
     }
   }
   if (!participants.length) return { phase, teams: [], waiting: true };
-  const key = 'game:' + (game ? game.gameId : participants.map((p) => p.riotId).join(','));
+  const key = `game:${session && session.gameId ? session.gameId : ''}:` + participants.map((p) => p.puuid).sort().join(',');
   if (lobby.key === key && lobby.data) return lobby.data;
 
   const liveMe = live.inGame && live.data.activePlayer ? String(live.data.activePlayer.riotId || '').toLowerCase() : '';
   const players = await Promise.all(participants.map((p) => scoutPlayer(region, {
-    ...p, me: (!!id.puuid && p.puuid === id.puuid) || (!!liveMe && p.riotId.toLowerCase() === liveMe),
-  })));
-  // Rolle: die spel se eie posisies waar beskikbaar, anders geraai uit wat elke champion gewoonlik speel
+    ...p, me: (viaClient && !!id.puuid && p.puuid === id.puuid) || (!!liveMe && !!p.riotId && p.riotId.toLowerCase() === liveMe),
+  }, viaClient)));
+  // Rolle: wat die spel self sê, anders geraai uit wat elke champion gewoonlik speel
   const livePos = {};
   if (live.inGame) for (const p of live.data.allPlayers || []) if (p.position) livePos[championIdFromLive(p, dd)] = p.position;
   const teamIds = [...new Set(players.map((p) => p.teamId))].sort((a, b) => a - b);
   // Rolle maak net sin op Summoner's Rift met spanne van 5 (nie ARAM/Arena nie)
-  const laned = game ? ![450, 1700, 1710, 2400].includes(game.gameQueueConfigId) && game.mapId !== 12 && game.mapId !== 30 : true;
+  const mode = live.inGame && live.data.gameData ? String(live.data.gameData.gameMode || '') : '';
+  const laned = !['ARAM', 'CHERRY'].includes(mode)
+    && !(session && ([450, 1700, 1710, 2400].includes(session.queueId) || session.mapId === 12 || session.mapId === 30));
   for (const teamId of teamIds) {
     const team = players.filter((p) => p.teamId === teamId);
     if (!laned || team.length > 5) { for (const p of team) p.role = ''; continue; }
-    const guess = builds.guessRoles(team.map((p) => ({ championId: p.championId, roles: roleMapOf(p.championId) })));
-    for (const p of team) p.role = builds.ROLES.includes(livePos[p.championId]) ? livePos[p.championId] : (guess[p.championId] || '');
+    const guess = builds.guessRoles(team.map((p) => ({ championId: p.championId, roles: roleMapOf(p.championId, p.spells) })));
+    for (const p of team) {
+      p.role = builds.ROLES.includes(p.position) ? p.position
+        : builds.ROLES.includes(livePos[p.championId]) ? livePos[p.championId] : (guess[p.championId] || '');
+    }
   }
   const mine = players.find((p) => p.me);
   const myTeamId = mine ? mine.teamId : 100;
   if (mine && mine.role) for (const p of players) if (p.teamId !== myTeamId && p.role === mine.role) p.opp = true;
   const data = {
-    phase: 'InGame', region, gameId: game ? game.gameId : null, queueId: game ? game.gameQueueConfigId : null, myTeamId,
+    phase: 'InGame', region, gameId: session ? session.gameId : null, queueId: session ? session.queueId : null, myTeamId,
     teams: teamIds.sort((a, b) => (a === myTeamId ? -1 : b === myTeamId ? 1 : a - b)).map((t) => ({ teamId: t, mine: t === myTeamId, players: players.filter((p) => p.teamId === t) })),
     at: Date.now(),
   };
@@ -694,7 +832,7 @@ function requireJson(req) {
 
 app.use(express.json({ limit: '10kb' }));
 
-app.get('/api/status', (req, res) => res.json({ hasKey: !!API_KEY, version: APP_VERSION }));
+app.get('/api/status', (req, res) => res.json({ hasKey: !!API_KEY, version: APP_VERSION, client: !!lcuState.connected }));
 
 // Stoor die speler se eie Riot API-sleutel plaaslik (nooit in die app self ingebou nie)
 app.post('/api/settings', wrap(async (req, res) => {
@@ -737,6 +875,30 @@ app.get('/api/profile', wrap(async (req, res) => {
   const cfg = loadConfig();
   if (cfg.lastRegion !== region) { cfg.lastRegion = region; saveConfig(cfg); }
 
+  if (!API_KEY) {
+    // Geen sleutel: alles uit die League-kliënt
+    const m = await requireClient(region);
+    const profile = await cached(`cprofile:${riotId.toLowerCase()}`, 60 * 1000, async () => {
+      const mine = m.riotId && m.riotId.toLowerCase() === riotId.toLowerCase();
+      const s = mine && m.puuid
+        ? await lcu.summonerByPuuid(m.puuid).catch(() => ({ puuid: m.puuid, gameName, tagLine, summonerLevel: m.level, profileIconId: m.profileIconId }))
+        : await lcu.lookupRiotId(gameName, tagLine);
+      if (!s || !s.puuid) throw httpError(404, `No player called ${riotId} on your server. Check the name and the tag after the #.`);
+      const [rk, ms] = await Promise.allSettled([lcu.ranked(s.puuid), lcu.masteries(s.puuid)]);
+      return {
+        puuid: s.puuid,
+        gameName: s.gameName || gameName,
+        tagLine: s.tagLine || tagLine,
+        level: s.summonerLevel,
+        profileIconId: s.profileIconId,
+        ranked: rk.status === 'fulfilled' ? rk.value : [],
+        mastery: ms.status === 'fulfilled' ? ms.value.slice(0, 5) : [],
+        source: 'client',
+      };
+    });
+    return res.json(profile);
+  }
+
   const profile = await cached(`profile:${region}:${riotId.toLowerCase()}`, 2 * 60 * 1000, async () => {
     const account = await riot(accountRoute(region),
       `/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`);
@@ -768,6 +930,19 @@ app.get('/api/matches', wrap(async (req, res) => {
   if (!/^[A-Za-z0-9_-]{20,}$/.test(puuid)) throw httpError(400, 'Invalid puuid.');
   const start = Math.max(0, Number(req.query.start) || 0);
   const count = Math.min(20, Math.max(1, Number(req.query.count) || 10));
+  if (isClientPuuid(puuid)) {
+    // Profiel kom uit die League-kliënt -> wedstryde ook
+    await requireClient(region);
+    const list = await lcu.matchList(puuid, start, start + count - 1).catch((err) => {
+      if (err.lcuClosed) throw err;
+      throw httpError(502, "Couldn't load this player's match history from the League client (their profile may be private).");
+    });
+    const results = await Promise.all(list.map((g) => getClientGame(g.gameId)
+      .then((full) => simplifyLcuGame(full, puuid))
+      .catch((err) => { if (err.lcuClosed) throw err; return null; })));
+    const matches = results.filter(Boolean).sort((a, b) => b.endedAt - a.endedAt);
+    return res.json({ matches, hasMore: list.length === count });
+  }
   const route = matchRoute(region);
   const ids = await riot(route, `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=${start}&count=${count}`);
   // Parallel (die rate limiter hou steeds by Riot se limiete), volgorde bly behoue
