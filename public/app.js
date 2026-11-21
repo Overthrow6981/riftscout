@@ -646,6 +646,25 @@ function runePageHtml(e, games, main, noStats) {
   </div>`;
 }
 
+// Items as daar nog min eie games vir die champion is: sy eie paar games, of wat soortgelyke champions koop
+function itemsLiteCard(it, name) {
+  if (!it) return '';
+  const label = it.kind === 'class'
+    ? `What ${esc(it.className)}s buy as ${esc(ROLE_NAMES[it.role] || it.role)} · ${it.games} high-elo games`
+    : `${esc(name)}'s own games · only ${it.games} so far`;
+  const row = (e, ids, extra) => `<div class="irow">${ids.map((id) => itemIcon(id)).join(extra || '')}<div class="sub">${wr(e)} · ${e.n}</div></div>`;
+  const opts = (list, lbl) => (list && list.length ? `<div class="iopt"><div class="ilabel">${lbl}</div>${list.map((e) => `
+      <div class="ichoice">${itemIcon(e.id)}<div class="sub">${wr(e)}<br>${e.n}</div></div>`).join('')}</div>` : '');
+  return `<div class="card"><h3>Items <span class="mtag">${it.kind === 'class' ? 'similar champions' : 'few games'}</span></h3>
+    <div class="sub" style="margin-bottom:8px">${label}</div>
+    <div class="items-grid">
+      ${it.start.length ? `<div class="iblock"><div class="ilabel">Starting items</div>${row(it.start[0], it.start[0].ids)}</div>` : ''}
+      ${it.boots.length ? `<div class="iblock"><div class="ilabel">Boots</div>${it.boots.map((e) => row(e, [e.id])).join('')}</div>` : ''}
+      ${it.core.length ? `<div class="iblock wide"><div class="ilabel">Core build</div>${row(it.core[0], it.core[0].ids, '<span class="arrow">›</span>')}</div>` : ''}
+    </div>
+    <div class="items-grid">${opts(it.item4, '4th item')}${opts(it.item5, '5th item')}${opts(it.item6, '6th item')}</div></div>`;
+}
+
 // Rune-kaart: kies tussen die gewildste bladsye en sit die gekose een met een klik in League
 let runeSel = 0;
 function runeCardHtml(r) {
@@ -688,25 +707,25 @@ function renderBuild() {
           ${r.fromMatchup.length ? ' · <span class="mtag">matchup build</span>' : ` · general build (matchup build from ${b.matchupMin} games)`}</div>` : ''}
       </div>
       <div class="bh-actions" title="${esc(tip)}">
-        <button class="imp" data-what="runes,items" ${dis}>${riot ? 'Import runes' : 'Import runes + items'}</button>
+        <button class="imp" data-what="runes,items" ${dis}>${riot && !b.items ? 'Import runes' : 'Import runes + items'}</button>
         <button class="imp ghost" data-what="spells" ${disSpells}>Set spells</button>
       </div>
     </div>
     <div id="importMsg" class="hint"></div>`;
   if (!enough && riot) {
-    $('buildView').innerHTML = head + `<div class="notice">RiftScout's own win-rate stats for ${esc(c.name)} aren't in yet, so this is
-      <b>Riot's recommended setup</b> straight from your League client – it imports instantly. Items: use the recommended items in the game's shop.</div>
+    $('buildView').innerHTML = head + `<div class="notice">RiftScout's own win-rate stats for ${esc(c.name)} aren't in yet, so the runes are
+      <b>Riot's recommended setup</b> straight from your League client.${b.items ? ' The items below go into the game\'s shop as an item set.' : ' Items: use the recommended items in the game\'s shop.'}</div>
       <div class="build-grid">
         <div class="card"><h3>Runes <span class="mtag">Riot recommended</span></h3>${runeTreeHtml(riot)}</div>
         <div class="card"><h3>Summoner spells</h3>${riot.spells.length ? `<div class="spellrow">${riot.spells.map((sp) =>
           `<img src="${spellImg(sp)}" alt="" title="${esc(dd.spells[sp] ? dd.spells[sp].name : '')}">`).join('')}</div>` : '<div class="sub">—</div>'}</div>
-      </div>`;
+      </div>${itemsLiteCard(b.items, c.name)}`;
     return;
   }
   if (!enough) {
     const g = r ? r.games : 0;
     $('buildView').innerHTML = head + `<div class="notice">Not enough games for ${esc(c.name)}${b.role ? ' ' + esc(ROLE_NAMES[b.role]) : ''} yet
-      (${g} of ${b.minGames}). ${lcuConnected ? '' : "Open the League client to see Riot's recommended runes for this champion right away."}</div>`;
+      (${g} of ${b.minGames}). ${lcuConnected ? '' : "Open the League client to see Riot's recommended runes for this champion right away."}</div>${itemsLiteCard(b.items, c.name)}`;
     return;
   }
   const tag = (k) => (r.fromMatchup.includes(k) ? ` <span class="mtag">vs ${esc(champName(r.vs.championId))}</span>` : '');
@@ -786,7 +805,7 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}` : v.error}`);
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'class' ? ' (what similar champions buy)' : ''}` : v.error}`);
   if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
   return parts.join(' · ');
 }
