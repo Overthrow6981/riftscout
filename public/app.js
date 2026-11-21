@@ -649,13 +649,20 @@ function runePageHtml(e, games, main, noStats) {
 // Items as daar nog min eie games vir die champion is: sy eie paar games, of wat soortgelyke champions koop
 function itemsLiteCard(it, name) {
   if (!it) return '';
-  const label = it.kind === 'class'
-    ? `What ${esc(it.className)}s buy as ${esc(ROLE_NAMES[it.role] || it.role)} · ${it.games} high-elo games`
-    : `${esc(name)}'s own games · only ${it.games} so far`;
-  const row = (e, ids, extra) => `<div class="irow">${ids.map((id) => itemIcon(id)).join(extra || '')}<div class="sub">${wr(e)} · ${e.n}</div></div>`;
+  const role = esc(ROLE_NAMES[it.role] || it.role);
+  const like = (it.similar || []).map((c) => esc(c.name)).join(', ');
+  const label = it.kind === 'own' || it.kind === 'champion'
+    ? `${esc(name)}'s own items from ${it.games} high-elo games (mostly in other roles – items barely change between roles). Starting items for ${role}.`
+    : it.kind === 'mixed'
+      ? `${esc(name)}'s own ${it.games} high-elo game${it.games === 1 ? '' : 's'}, plus the champions whose item builds are closest to ${esc(name)}'s: ${like}.`
+      : `No games for ${esc(name)} yet, so these come from the champions most like ${esc(name)}: ${like}.`;
+  const tag = it.kind === 'own' || it.kind === 'champion' ? 'own games' : it.kind === 'mixed' ? 'few games' : 'similar champions';
+  const showStats = it.kind === 'own' || it.kind === 'champion';
+  const st = (e) => (showStats ? `<div class="sub">${wr(e)} · ${e.n}</div>` : '');
+  const row = (e, ids, extra) => `<div class="irow">${ids.map((id) => itemIcon(id)).join(extra || '')}${st(e)}</div>`;
   const opts = (list, lbl) => (list && list.length ? `<div class="iopt"><div class="ilabel">${lbl}</div>${list.map((e) => `
-      <div class="ichoice">${itemIcon(e.id)}<div class="sub">${wr(e)}<br>${e.n}</div></div>`).join('')}</div>` : '');
-  return `<div class="card"><h3>Items <span class="mtag">${it.kind === 'class' ? 'similar champions' : 'few games'}</span></h3>
+      <div class="ichoice">${itemIcon(e.id)}${showStats ? `<div class="sub">${wr(e)}<br>${e.n}</div>` : ''}</div>`).join('')}</div>` : '');
+  return `<div class="card"><h3>Items <span class="mtag">${tag}</span></h3>
     <div class="sub" style="margin-bottom:8px">${label}</div>
     <div class="items-grid">
       ${it.start.length ? `<div class="iblock"><div class="ilabel">Starting items</div>${row(it.start[0], it.start[0].ids)}</div>` : ''}
@@ -805,7 +812,7 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'class' ? ' (what similar champions buy)' : ''}` : v.error}`);
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}` : v.error}`);
   if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
   return parts.join(' · ');
 }
