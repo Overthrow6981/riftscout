@@ -112,3 +112,17 @@ test('guessRoles gee elke champion in die span sy beste rol', () => {
   ]);
   assert.deepEqual(g, { 1: 'MIDDLE', 2: 'JUNGLE', 3: 'BOTTOM', 4: 'UTILITY', 5: 'TOP' });
 });
+
+test('statsForMany tel die games van verskeie champions saam (vir klas-items)', () => {
+  const db = new b.BuildDB(path.join(os.tmpdir(), 'rs-many-never-saved.json'));
+  const row = (c, win) => ({ championId: c, role: 'MIDDLE', vs: 0, win, laneWin: null, runes: '8100:8112,8139,8138,8135|8200:8226,8210|5008,5008,5001',
+    spells: '4,14', start: '1056,2003', completed: [3089, 3157, 3135], boots: 3020, maxOrder: 'Q>W>E', skills: 'QWEQQRQWQWRWWEE' });
+  for (let i = 0; i < 4; i++) db.addMatch('16.23', [row(1, true)]);
+  for (let i = 0; i < 6; i++) db.addMatch('16.23', [row(99, i < 3)]);
+  const s = db.statsForMany([1, 99, 555], 'MIDDLE');
+  assert.equal(s.games, 10);
+  assert.equal(s.wins, 7);
+  const rec = b.recommend(s, null);
+  assert.deepEqual(rec.core[0].ids, [3089, 3157, 3135]);
+  assert.equal(db.statsForMany([], 'MIDDLE').games, 0);
+});

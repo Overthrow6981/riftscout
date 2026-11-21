@@ -20,7 +20,8 @@ function startMock({ riotMode = () => 'ok' } = {}) {
     '/dd/api/versions.json': ['16.23.1'],
     '/dd/cdn/16.23.1/data/en_US/summoner.json': { data: { SummonerFlash: { key: '4', name: 'Flash', image: { full: 'SummonerFlash.png' } } } },
     '/dd/cdn/16.23.1/data/en_US/runesReforged.json': [{ id: 8100, name: 'Domination', icon: 'd.png', slots: [{ runes: [{ id: 8112, name: 'Electrocute', icon: 'e.png' }] }] }],
-    '/dd/cdn/16.23.1/data/en_US/champion.json': { data: { Annie: { key: '1', id: 'Annie', name: 'Annie', tags: ['Mage'] }, Zed: { key: '238', id: 'Zed', name: 'Zed', tags: ['Assassin'] }, Lux: { key: '99', id: 'Lux', name: 'Lux', tags: ['Mage'] } } },
+    '/dd/cdn/16.23.1/data/en_US/champion.json': { data: { Annie: { key: '1', id: 'Annie', name: 'Annie', tags: ['Mage'] }, Zed: { key: '238', id: 'Zed', name: 'Zed', tags: ['Assassin'] }, Lux: { key: '99', id: 'Lux', name: 'Lux', tags: ['Mage'] },
+      Syndra: { key: '134', id: 'Syndra', name: 'Syndra', tags: ['Mage'] }, Cassiopeia: { key: '69', id: 'Cassiopeia', name: 'Cassiopeia', tags: ['Mage'] } } },
     '/dd/cdn/16.23.1/data/en_US/item.json': { data: { 3089: { name: "Rabadon's Deathcap", gold: { total: 3600 }, tags: [] } } },
   };
   const server = http.createServer((req, res) => {

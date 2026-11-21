@@ -90,3 +90,27 @@ test('Data Dragon gee volle rune-bome vir die rune-bladsy', async () => {
   const d = (await call(port, 'GET', '/api/ddragon')).json;
   assert.deepEqual(d.trees, [{ id: 8100, name: 'Domination', icon: 'd.png', slots: [[8112]] }]);
 });
+
+test('items vir champions sonder eie data: wat soortgelyke champions in die rol koop', async () => {
+  assert.ok(await until(async () => (await call(port, 'GET', '/api/builds/status')).json.sharedMatches > 0));
+  // Syndra het geen games nie: die mages (Annie + Lux) in Mid gee die item set
+  const syn = (await call(port, 'GET', '/api/builds/champion/134?role=MIDDLE')).json;
+  assert.ok(!syn.rec || syn.rec.games < 10, 'self nog te min data');
+  assert.equal(syn.items.kind, 'class');
+  assert.equal(syn.items.className, 'mage');
+  assert.equal(syn.items.games, 58);
+  assert.deepEqual(syn.items.core[0].ids, [3089, 3157, 3135]);
+  assert.equal(syn.items.boots[0].id, 3020);
+  // Cassiopeia kan nie boots koop nie
+  const cass = (await call(port, 'GET', '/api/builds/champion/69?role=MIDDLE')).json;
+  assert.equal(cass.items.kind, 'class');
+  assert.deepEqual(cass.items.boots, []);
+  // Zed het 8 eie games (minder as die 10 vir 'n volle build): sy eie items word gebruik
+  const zed = (await call(port, 'GET', '/api/builds/champion/238?role=MIDDLE')).json;
+  assert.equal(zed.items.kind, 'champion');
+  assert.equal(zed.items.games, 8);
+  // Sonder rol en sonder Riot se posisies is daar niks om op te bou nie: geen items, geen fout
+  const none = await call(port, 'GET', '/api/builds/champion/134');
+  assert.equal(none.status, 200);
+  assert.equal(none.json.items, undefined);
+});
