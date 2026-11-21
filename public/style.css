@@ -470,3 +470,7 @@ ol.counters .few { color: var(--muted); opacity: .7; }
 .cs-best img { width: 28px; height: 28px; border-radius: 6px; }
 .cs-best .good { color: #4ade80; font-weight: 700; }
 .cs-best .bad { color: #f87171; font-weight: 700; }
+.pick-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px 3px 3px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--line, #2a2f3a); cursor: pointer; }
+.pick-chip:hover { border-color: var(--gold); }
+.pick-chip img { width: 26px; height: 26px; }
+small.ovr { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted, #8b93a7); border: 1px solid var(--line, #2a2f3a); border-radius: 4px; padding: 0 4px; margin-left: 4px; }

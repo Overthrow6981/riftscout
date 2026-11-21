@@ -873,11 +873,29 @@ async function loadBest(role) {
   return bestData;
 }
 
+// Teen-keuses plus sterk keuses in die rol: altyd minstens 8 om van te kies (teen-keuses eerste)
+const MIN_PICKS = 8;
+function pickRows(c) {
+  const vs = ((c && c.counters) || []).map((x) => ({ ...x, src: 'vs' }));
+  const overall = ((c && c.best) || []).map((x) => ({ ...x, src: 'overall' }));
+  return vs.concat(overall.slice(0, Math.max(0, MIN_PICKS - vs.length)));
+}
+// Klein lysie bo-aan: die top 3 keuses wat nog beskikbaar is
+const topPicks = (rows, cs, n = 3) => {
+  const taken = takenSet(cs);
+  return rows.filter((x) => !taken.has(x.championId)).slice(0, n);
+};
+const pickChip = (x) => `<span class="pick-chip" data-champ-chip="${x.championId}" title="${x.src === 'overall'
+  ? 'Strong pick in this role overall – not enough games vs this enemy yet' : 'Wins most often against this enemy'}">
+  <img src="${champIcon(x.championId)}" alt=""><b>${esc(champName(x.championId))}</b>
+  <span class="${wrCls(x.wr)}">${pct(x.wr)}</span>${x.src === 'overall' ? '<small class="ovr">overall</small>' : ''}</span>`;
+
 // Tabel soos Blitz: champion, game-wenkoers, lane-wenkoers (voor in goud op 15 min) en hoeveel games
 function counterTable(list, cs, vsName) {
   const taken = takenSet(cs);
   const cls = (x) => (x >= 0.5 ? 'good' : 'bad');
-  const sorted = [...list].sort((a, b) => (csSort === 'lane'
+  const grp = (x) => (x.src === 'overall' ? 1 : 0);
+  const sorted = [...list].sort((a, b) => grp(a) - grp(b) || (csSort === 'lane'
     ? ((b.laneScore ?? -1) - (a.laneScore ?? -1))
     : (b.score - a.score)) || b.games - a.games);
   const gameTip = vsName ? `How often this champion wins the game vs ${vsName}` : 'How often this champion wins the game';
@@ -888,7 +906,7 @@ function counterTable(list, cs, vsName) {
       <span>Games</span></div>
     <ol class="counters">${sorted.map((x) => `<li data-champ="${x.championId}" class="${taken.has(x.championId) ? 'taken' : ''}"
         title="${taken.has(x.championId) ? 'Already picked or banned' : 'Click for runes and build'}">
-        <img src="${champIcon(x.championId)}" alt=""><span class="cn">${esc(champName(x.championId))}${taken.has(x.championId) ? ' <small>taken</small>' : ''}</span>
+        <img src="${champIcon(x.championId)}" alt=""><span class="cn">${esc(champName(x.championId))}${taken.has(x.championId) ? ' <small>taken</small>' : ''}${x.src === 'overall' && vsName ? ' <small class="ovr" title="Not enough games vs this enemy yet – this is its win rate in the role overall">overall</small>' : ''}</span>
         <span class="cval"><span class="cbar"><span class="${cls(x.wr)}" style="width:${Math.round(x.wr * 100)}%"></span></span><b class="${cls(x.wr)}">${pct(x.wr)}</b></span>
         <span class="cval">${x.laneWr == null ? '<span class="sub">–</span>' : `<span class="cbar"><span class="${cls(x.laneWr)}" style="width:${Math.round(x.laneWr * 100)}%"></span></span><b class="${cls(x.laneWr)}">${pct(x.laneWr)}</b>`}</span>
         <span class="sub ${x.games < 10 ? 'few' : ''}" ${x.games < 10 ? 'title="Few games – less reliable"' : ''}>${x.games.toLocaleString()}</span></li>`).join('')}</ol>`;
@@ -920,39 +938,30 @@ async function renderCsPanel(cs) {
     const vsName = champName(cs.vs);
     const mineId = cs.locked ? cs.championId : 0;
     const c = await loadCounters(cs.vs, cs.role, mineId);
-    const list = (c && c.counters) || [];
-    const best = (c && c.best) || [];
-    // Duidelik bo-aan: die beste pick teen jou laner (of, ná lock-in, hoe jou champion teen hom vaar)
-    const taken = takenSet(cs);
-    const top = list.find((x) => !taken.has(x.championId));
-    const topOverall = best.find((x) => !taken.has(x.championId));
-    let callout = '';
+    const rows = pickRows(c);
+    const nVs = rows.filter((x) => x.src === 'vs').length;
+    const top = topPicks(rows, cs);
+    const picksLine = top.length
+      ? `<div class="cs-best"><span class="cb-label">Best picks vs ${esc(vsName)}</span>${top.map(pickChip).join('')}</div>` : '';
+    let callout = picksLine;
     if (cs.locked && cs.championId) {
       const m = c && c.mine;
-      callout = m && m.games
+      callout = (m && m.games
         ? `<div class="cs-best"><span class="cb-label">Your matchup</span>${pickLine(m)} <span class="sub">vs ${esc(vsName)}</span></div>`
-        : `<div class="cs-best"><span class="cb-label">Your matchup</span><span class="sub">No games of ${esc(champName(cs.championId))} vs ${esc(vsName)} in RiftScout's data yet.</span></div>`;
-    } else if (top) {
-      callout = `<div class="cs-best"><span class="cb-label">Best pick vs ${esc(vsName)}</span>${pickLine(top)}</div>`;
-    } else if (topOverall) {
-      callout = `<div class="cs-best"><span class="cb-label">Strongest ${roleName} pick</span>${pickLine(topOverall)}
-        <span class="sub">(not enough games vs ${esc(vsName)} yet)</span></div>`;
+        : `<div class="cs-best"><span class="cb-label">Your matchup</span><span class="sub">No games of ${esc(champName(cs.championId))} vs ${esc(vsName)} in RiftScout's data yet.</span></div>`);
     }
     let inner = '';
-    if (list.length) {
-      inner += counterTable(list, cs, vsName) + `<div class="sub">Click a champion for its runes and build vs ${esc(vsName)}.
-        Game % = wins the game, Lane % = ahead in gold at 15 min. Sorted by win rate, weighted by number of games.</div>`;
-    }
-    if (best.length) {
-      inner += `<h3>${list.length ? 'More' : 'Strongest'} ${roleName} picks overall <small>not enough games vs ${esc(vsName)} for these yet</small></h3>${counterTable(best, cs, '')}`;
-    }
-    if (!list.length && !best.length) {
+    if (rows.length) {
+      inner += counterTable(rows, cs, vsName) + `<div class="sub">Click a champion for its runes and build vs ${esc(vsName)}.
+        Game % = wins the game, Lane % = ahead in gold at 15 min.${nVs < rows.length
+          ? ` ${nVs ? `The first ${nVs} are from games vs ${esc(vsName)}; ` : ''}champions marked <i>overall</i> are strong ${roleName} picks – there aren't enough games vs ${esc(vsName)} for them yet.` : ''}</div>`;
+    } else {
       inner += `<div class="sub">No matchup win rates vs ${esc(vsName)} yet – they come from RiftScout's shared match data, which grows every few hours.
         Your runes still import when you lock in.</div>`;
     }
     // Na lock-in: lys ingevou sodat jou runes en build bo-aan sigbaar is
     body = callout + (cs.locked
-      ? `<details class="cs-more"><summary>Best ${roleName} picks vs ${esc(vsName)}${list.length ? ` <small>(${list.length})</small>` : ''}</summary>${inner}</details>`
+      ? `<details class="cs-more"><summary>Best ${roleName} picks vs ${esc(vsName)} <small>(${rows.length})</small></summary>${inner}</details>`
       : `<h3>Best ${roleName} picks vs ${esc(vsName)}</h3>${inner}`);
   }
   const html = `<div class="ep-row"><span class="ep-label">Enemy picks</span>${enemies || '<span class="sub">none yet</span>'}</div>${fixHint}${body}`;
@@ -971,9 +980,9 @@ $('csPanel').addEventListener('click', async (e) => {
   }
   const sortBtn = e.target.closest('.ct-sort');
   if (sortBtn) { csSort = sortBtn.dataset.sort; csPanelHtml = ''; if (lastCs) renderCsPanel(lastCs); return; }
-  const li = e.target.closest('li[data-champ]');
+  const li = e.target.closest('li[data-champ], [data-champ-chip]');
   if (!li || !lastCs) return;
-  openBuild(Number(li.dataset.champ), lastCs.role, false, lastCs.vs || null);
+  openBuild(Number(li.dataset.champ || li.dataset.champChip), lastCs.role, false, lastCs.vs || null);
 });
 let lastCs = null;
 
