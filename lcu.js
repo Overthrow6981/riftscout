@@ -207,6 +207,10 @@ const isRiftScoutSet = (s, championId) => String(s.title || '').startsWith('Rift
 const isBlitzSet = (s, championId, champName) => /^blitz\b/i.test(String(s.title || '').trim())
   && (forChamp(s, championId) || (!(s.associatedChampions || []).length && !!champName && String(s.title).includes(champName)));
 
+// Volgorde in die winkel: sets met "priority" eerste, dan die hoogste "sortrank" (aflopend)
+const setRank = (s) => (s.priority ? 1e9 : 0) + (Number(s.sortrank) || 0);
+const visibleFor = (s, championId) => forChamp(s, championId) || !(s.associatedChampions || []).length;
+
 async function readItemSets() {
   const me = await request('GET', '/lol-summoner/v1/current-summoner');
   if (me.status !== 200 || !me.data || !me.data.summonerId) return { error: 'Not logged in to the League client.' };
@@ -221,10 +225,12 @@ async function itemSetStatus(championId, champName) {
   const r = await readItemSets();
   if (r.error) return null;
   const sets = r.data.itemSets || [];
-  const mine = sets.filter((s) => forChamp(s, championId));
+  // Wat die winkel vir hierdie champion wys, in die volgorde wat dit wys (die eerste een is die een wat oopmaak)
+  const mine = sets.filter((s) => visibleFor(s, championId)).sort((a, b) => setRank(b) - setRank(a));
+  const ours = mine.find((s) => isRiftScoutSet(s, championId));
   return {
-    ours: sets.some((s) => isRiftScoutSet(s, championId)),
-    first: !!mine[0] && isRiftScoutSet(mine[0], championId),
+    ours: !!ours,
+    first: !!ours && !mine.some((s) => s !== ours && setRank(s) >= setRank(ours)),
     blitz: sets.filter((s) => isBlitzSet(s, championId, champName)).length,
   };
 }
@@ -241,6 +247,8 @@ async function importItemSet(championId, title, blocks, { removeBlitz = false, c
     if (removeBlitz && isBlitzSet(s, championId, champName)) { removed++; return false; }
     return true;
   });
+  // Bo-aan in die winkel: "priority" plus 'n hoër sortrank as enige ander set wat vir hierdie champion wys
+  const top = itemSets.filter((s) => visibleFor(s, championId)).reduce((m, s) => Math.max(m, Number(s.sortrank) || 0), 0);
   itemSets.unshift({
     title: title.slice(0, 75),
     associatedChampions: [championId],
@@ -249,12 +257,13 @@ async function importItemSet(championId, title, blocks, { removeBlitz = false, c
     map: 'any',
     mode: 'any',
     preferredItemSlots: [],
-    sortrank: 0,
+    priority: true,
+    sortrank: Math.min(top + 1, 2147483647),
     startedFrom: 'blank',
     type: 'custom',
     uid: crypto.randomUUID(),
   });
-  const put = await request('PUT', url, { ...cur.data, itemSets });
+  const put = await request('PUT', url, { ...cur.data, itemSets, timestamp: Date.now() });
   return ok(put) ? { ok: true, removedBlitz: removed } : { ok: false, error: `Item set import failed (${put.status}).` };
 }
 
