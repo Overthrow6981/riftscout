@@ -437,8 +437,8 @@ function countersFor(enemyId, role, mineId) {
   if (!use) return { enemyId, role: '', counters: [], best: [] };
   const enemy = db.statsFor(enemyId, use, builds.KEEP_PATCHES).stats;
   const counters = builds.counterPicks(enemy, COUNTER_MIN, 20);
-  const best = counters.length >= 5 ? [] : builds.bestInRole(db.roleTable(use, builds.KEEP_PATCHES), 20, 10,
-    [enemyId, ...counters.map((c) => c.championId)]);
+  // Altyd 'n paar sterk keuses in die rol by, vir as daar nog min games teen hierdie vyand is
+  const best = builds.bestInRole(db.roleTable(use, builds.KEEP_PATCHES), 20, 10, [enemyId, ...counters.map((c) => c.championId)]);
   // Hoe vaar jou eie champion teen hierdie vyand (die vyand se syfers omgekeer)
   let mine = null;
   if (mineId && mineId !== enemyId) {
