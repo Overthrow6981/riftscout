@@ -475,8 +475,6 @@ async function openSettings() {
     $('prefSpells').checked = p.autoSpells;
     $('prefOpenCs').checked = p.openOnChampSelect;
     $('prefReplace').checked = p.replacePages;
-    $('prefOverlay').checked = p.overlay;
-    $('prefPos').value = p.overlayPosition;
   } catch { /* gebruik wat daar is */ }
   $('settings').classList.remove('hidden');
 }
@@ -507,8 +505,6 @@ $('settingsSave').addEventListener('click', async () => {
       autoSpells: $('prefSpells').checked,
       openOnChampSelect: $('prefOpenCs').checked,
       replacePages: $('prefReplace').checked,
-      overlay: $('prefOverlay').checked,
-      overlayPosition: $('prefPos').value,
     });
     $('apiKey').value = '';
     msg.textContent = 'Settings saved.';
