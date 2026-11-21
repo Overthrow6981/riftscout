@@ -1,0 +1,69 @@
+# Kyk elke 6 uur of League 'n nuwe patch het, en of RiftScout nog alles verstaan wat dit uit League lees
+# (Data Dragon se champions, items, runes en spells) en of die gedeelde build-data games van die nuwe patch kry.
+# Die verslag gaan in een GitHub issue per patch ("League patch 16.24: RiftScout check"); probleme heropen dit.
+# Dit verander niks aan die app nie en stuur geen opdatering uit nie.
+
+name: Patch check
+
+on:
+  schedule:
+    - cron: '41 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: patch-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install (without Electron)
+        run: npm install --omit=dev --no-audit --no-fund
+
+      - name: Unit tests
+        id: tests
+        continue-on-error: true
+        run: npm test
+
+      - name: Check against the newest League patch
+        id: pc
+        env:
+          TESTS: ${{ steps.tests.outcome }}
+        run: node tools/patchcheck.js
+
+      - name: Write the report to this patch's issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PATCH: ${{ steps.pc.outputs.patch }}
+          STATUS: ${{ steps.pc.outputs.status }}
+        run: |
+          title="League patch $PATCH: RiftScout check"
+          gh label create patch-check --color 1d76db --description "Automatic League patch check" 2>/dev/null || true
+          num=$(gh issue list --label patch-check --state all --limit 50 --json number,title --jq ".[] | select(.title == \"$title\") | .number" | head -n 1)
+          if [ -z "$num" ]; then
+            gh issue create --title "$title" --label patch-check --body-file patch-report.md
+            # Die vorige patch se issue is klaar
+            for old in $(gh issue list --label patch-check --state open --limit 50 --json number,title --jq ".[] | select(.title != \"$title\") | .number"); do
+              gh issue close "$old" --comment "Patch $PATCH is out – see its own issue." || true
+            done
+          else
+            prev=$(gh issue view "$num" --json body --jq .body)
+            gh issue edit "$num" --body-file patch-report.md
+            # Net een keer laat weet as dit nuut stukkend is (nie elke 6 uur nie)
+            if [ "$STATUS" = "fail" ] && ! printf '%s' "$prev" | grep -q '❌'; then
+              gh issue reopen "$num" 2>/dev/null || true
+              gh issue comment "$num" --body "❌ The latest check found a problem – see the report above." || true
+            fi
+          fi
