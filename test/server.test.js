@@ -24,12 +24,12 @@ after(() => { mock.server.close(); setTimeout(() => process.exit(0), 50); });
 
 test('ander webwerwe en DNS-rebinding word geblokkeer', async () => {
   assert.equal((await call(port, 'GET', '/api/status', { headers: { Host: 'evil.example:80' } })).status, 403);
-  const r = await call(port, 'POST', '/api/prefs', { body: { overlay: false }, headers: { Origin: 'https://evil.example' } });
+  const r = await call(port, 'POST', '/api/prefs', { body: { autoImport: false }, headers: { Origin: 'https://evil.example' } });
   assert.equal(r.status, 403);
 });
 
 test('POST moet JSON wees; stukkende JSON gee 400 sonder stack trace', async () => {
-  assert.equal((await call(port, 'POST', '/api/prefs', { body: 'overlay=false', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })).status, 415);
+  assert.equal((await call(port, 'POST', '/api/prefs', { body: 'autoImport=false', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })).status, 415);
   const bad = await call(port, 'POST', '/api/lcu/import', { body: 'not json' });
   assert.equal(bad.status, 400);
   assert.deepEqual(bad.json, { error: 'Invalid JSON.' });
@@ -56,9 +56,9 @@ test('invoer word nagegaan: import, profiel en bediener', async () => {
 test('instellings: verkeerde sleutel word geweier, voorkeure word gestoor', async () => {
   const k = await call(port, 'POST', '/api/settings', { body: { apiKey: 'nope' } });
   assert.equal(k.status, 400);
-  const p = await call(port, 'POST', '/api/prefs', { body: { autoSpells: false, overlayPosition: 'left', crawlRegion: 'zz' } });
+  const p = await call(port, 'POST', '/api/prefs', { body: { autoSpells: false, overlay: true, crawlRegion: 'zz' } });
   assert.equal(p.json.autoSpells, false);
-  assert.equal(p.json.overlayPosition, 'left');
+  assert.equal(p.json.overlay, undefined, 'die in-game oorleg bestaan nie meer nie');
   assert.equal(p.json.crawlRegion, '', 'onbekende streek word geïgnoreer');
   const st = await call(port, 'GET', '/api/status');
   assert.equal(st.json.hasKey, false);
