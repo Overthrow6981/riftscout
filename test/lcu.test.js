@@ -13,3 +13,11 @@ test('Blitz-app se item sets word herken (en net vir jou champion)', () => {
   assert.ok(!lcu.isBlitzSet(s('My MF build', [21]), 21, 'Miss Fortune'), 'jou eie sets bly');
   assert.ok(!lcu.isBlitzSet(s('', [21]), 21, 'Miss Fortune'));
 });
+
+test('Blitz se rune page word herken, jou eie en RiftScout s\'n nie', () => {
+  assert.ok(lcu.isBlitzPage({ id: 1, name: 'Blitz: Miss Fortune ADC' }));
+  assert.ok(lcu.isBlitzPage({ id: 1, name: 'Miss Fortune (Blitz)' }));
+  assert.ok(!lcu.isBlitzPage({ id: 1, name: 'RiftScout Miss Fortune' }));
+  assert.ok(!lcu.isBlitzPage({ id: 1, name: 'My MF page' }));
+  assert.ok(!lcu.isBlitzPage(null));
+});

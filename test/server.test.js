@@ -122,3 +122,20 @@ test('items vir champions met te min eie games in die rol', async () => {
   assert.equal(none.status, 200);
   assert.equal(none.json.items, undefined);
 });
+
+test('aktiwiteit-log en "Close Blitz" (net op Windows)', async () => {
+  const a = await call(port, 'GET', '/api/activity');
+  assert.equal(a.status, 200);
+  assert.ok(Array.isArray(a.json.events));
+  const st = await call(port, 'GET', '/api/lcu/state');
+  assert.equal(st.json.blitzRunning, false);
+  // Moet JSON wees (CSRF-beskerming), en buite Windows doen dit niks
+  assert.equal((await call(port, 'POST', '/api/blitz/close', { body: 'x=1', headers: { 'Content-Type': 'application/x-www-form-urlencoded' } })).status, 415);
+  assert.equal((await call(port, 'POST', '/api/blitz/close', { body: {}, headers: { Origin: 'https://evil.example' } })).status, 403);
+  if (process.platform !== 'win32') {
+    const c = await call(port, 'POST', '/api/blitz/close', { body: {} });
+    assert.equal(c.json.ok, false);
+    const after = await call(port, 'GET', '/api/activity');
+    assert.ok(after.json.events.some((e) => /Could not close Blitz/.test(e.msg)));
+  }
+});
