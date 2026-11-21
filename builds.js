@@ -279,10 +279,10 @@ class BuildDB {
     return { stats: acc, patches };
   }
 
-  // Samegevoegde syfers van verskeie champions in een rol (bv. alle mages in mid) – vir items as 'n champion nog min games het
-  statsForMany(championIds, role, nPatches = 2) {
+  // Een champion se games oor verskeie rolle saam (bv. Darius in Top + Jungle + Mid) – items hang meer van die champion af as van die rol
+  statsForRoles(championId, roles, nPatches = 2) {
     const acc = emptyRole();
-    for (const id of championIds) mergeRole(acc, this.statsFor(id, role, nPatches).stats);
+    for (const r of roles) mergeRole(acc, this.statsFor(championId, r, nPatches).stats);
     return acc;
   }
 
@@ -374,6 +374,9 @@ function top(map, k = 3) {
 }
 const nums = (key, sep = ',') => key.split(sep).map(Number);
 
+// Opsies vir die 4de–6de item (die eerste 8; ná die kern-build word dit tot 3 gesny)
+const lateOptions = (map) => top(map, 8).map((e) => ({ ...e, id: Number(e.key) }));
+
 function recommend(s, vsId) {
   const rec = {
     games: s.games,
@@ -384,9 +387,9 @@ function recommend(s, vsId) {
     start: top(s.start, 2).map((e) => ({ ...e, ids: nums(e.key) })),
     boots: top(s.boots, 3).map((e) => ({ ...e, id: Number(e.key) })),
     core: top(s.core, 3).map((e) => ({ ...e, ids: nums(e.key, '-') })),
-    item4: top(s.item4, 3).map((e) => ({ ...e, id: Number(e.key) })),
-    item5: top(s.item5, 3).map((e) => ({ ...e, id: Number(e.key) })),
-    item6: top(s.item6, 3).map((e) => ({ ...e, id: Number(e.key) })),
+    item4: lateOptions(s.item4),
+    item5: lateOptions(s.item5),
+    item6: lateOptions(s.item6),
     items: top(s.items, 10).map((e) => ({ ...e, id: Number(e.key) })),
     maxOrder: top(s.maxOrder, 2),
     skills: top(s.skills, 1),
@@ -410,7 +413,69 @@ function recommend(s, vsId) {
       use('maxOrder', top(m.maxOrder, 2));
     }
   }
+  // Items wat reeds in die kern-build is, koop jy nie weer as 4de–6de item nie
+  const inCore = new Set(rec.core[0] ? rec.core[0].ids : []);
+  for (const k of ['item4', 'item5', 'item6']) rec[k] = rec[k].filter((e) => !inCore.has(e.id)).slice(0, 3);
   return rec;
+}
+
+// ---------- Items vir champions met min eie games ----------
+// 'n Champion se item-profiel: hoe gereeld hy elke voltooide item koop (0..1)
+function itemProfile(s) {
+  const v = {};
+  let norm = 0;
+  for (const [id, [n]] of Object.entries(s.items || {})) {
+    const f = n / Math.max(1, s.games);
+    v[id] = f;
+    norm += f * f;
+  }
+  return { v, norm: Math.sqrt(norm), games: s.games || 0 };
+}
+
+// Hoe eenders twee champions items koop (cosinus, 0..1)
+function profileSimilarity(a, b) {
+  if (!a || !b || !a.norm || !b.norm) return 0;
+  let dot = 0;
+  for (const [k, x] of Object.entries(a.v)) if (b.v[k]) dot += x * b.v[k];
+  return dot / a.norm / b.norm;
+}
+
+// Vir 'n heeltemal nuwe champion sonder enige games: eenderse klas, reikafstand, mana en AD/AP
+function metaSimilarity(A, B) {
+  if (!A || !B) return 0;
+  const ta = A.tags || [], tb = B.tags || [];
+  let s = 0;
+  if (ta[0] && ta[0] === tb[0]) s += 3;
+  else if (ta.includes(tb[0]) || tb.includes(ta[0])) s += 1.5;
+  if (ta[1] && ta[1] === tb[1]) s += 1.5;
+  if (A.range != null && B.range != null && (A.range >= 300) === (B.range >= 300)) s += 2;
+  if ((A.partype === 'Mana') === (B.partype === 'Mana')) s += 1;
+  const lean = (c) => (c.info && c.info.attack + c.info.magic ? (c.info.attack - c.info.magic) / (c.info.attack + c.info.magic) : 0);
+  s += 2 * (1 - Math.abs(lean(A) - lean(B)) / 2);
+  return s;
+}
+
+// Tel syfers saam met 'n gewig per bron; die tellings word weer heelgetalle
+const ITEM_KEYS = ['start', 'core', 'boots', 'items', 'item4', 'item5', 'item6'];
+function weightedMerge(list) {
+  const acc = emptyRole();
+  for (const { s, w } of list) {
+    if (!s || !w) continue;
+    acc.games += (s.games || 0) * w;
+    acc.wins += (s.wins || 0) * w;
+    for (const k of ITEM_KEYS) for (const [key, [n, ww]] of Object.entries(s[k] || {})) {
+      const e = acc[k][key] || (acc[k][key] = [0, 0]);
+      e[0] += n * w;
+      e[1] += ww * w;
+    }
+  }
+  acc.games = Math.round(acc.games);
+  acc.wins = Math.round(acc.wins);
+  for (const k of ITEM_KEYS) for (const [key, e] of Object.entries(acc[k])) {
+    e[0] = Math.round(e[0]); e[1] = Math.round(e[1]);
+    if (e[0] < 1) delete acc[k][key];
+  }
+  return acc;
 }
 
 // Hoe goed doen hierdie champion teen elke lane-teenstander
@@ -607,4 +672,5 @@ module.exports = {
   ROLES, PLATFORM_ROUTE, itemsFromDDragon, itemClassifier, analyzeMatch, patchOf, comparePatch,
   runeKey, parseRuneKey, maxOrder, BuildDB, SeenSet, Crawler, recommend, buildPath,
   matchups, counterPicks, bestInRole, guessRoles, MATCHUP_MIN, KEEP_PATCHES,
+  itemProfile, profileSimilarity, metaSimilarity, weightedMerge,
 };

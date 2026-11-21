@@ -339,7 +339,9 @@ async function getDDragon() {
       trees.push({ id: style.id, name: style.name, icon: style.icon, slots: style.slots.map((sl) => sl.runes.map((r) => r.id)) });
     }
     const champions = {};
-    for (const c of Object.values(champsRaw.data)) champions[c.key] = { id: c.id, name: c.name, tags: c.tags || [] };
+    for (const c of Object.values(champsRaw.data)) {
+      champions[c.key] = { id: c.id, name: c.name, tags: c.tags || [], partype: c.partype || '', info: c.info || null, range: c.stats ? c.stats.attackrange : null };
+    }
     const full = builds.itemsFromDDragon(itemsRaw);
     const items = {};
     for (const [id, it] of Object.entries(full)) items[id] = { name: it.name, gold: it.gold };
@@ -501,16 +503,18 @@ function enemyLaner(enemyIds, myRole, assign) {
 const ROLE_NAMES = { TOP: 'Top', JUNGLE: 'Jungle', MIDDLE: 'Mid', BOTTOM: 'ADC', UTILITY: 'Support' };
 const pctText = (e) => (e && e.n ? `${Math.round((e.w / e.n) * 100)}% win` : '');
 
-function itemBlocks(rec) {
+function itemBlocks(rec, plain = false) {
+  // plain: saamgevoegde data van soortgelyke champions – daar wys ons nie wenkoerse in die titels nie
+  const pct = (e) => (plain ? '' : ` · ${pctText(e)}`);
   const blk = (type, ids) => {
     const counts = new Map();
     for (const id of ids) counts.set(id, (counts.get(id) || 0) + 1);
     return { type, items: [...counts].map(([id, count]) => ({ id: String(id), count })) };
   };
   const blocks = [];
-  if (rec.start[0]) blocks.push(blk(`Starting items · ${pctText(rec.start[0])}`, rec.start[0].ids));
+  if (rec.start[0]) blocks.push(blk(`Starting items${pct(rec.start[0])}`, rec.start[0].ids));
   if (rec.boots.length) blocks.push(blk('Boots', rec.boots.slice(0, 2).map((e) => e.id)));
-  if (rec.core[0]) blocks.push(blk(`Core build · ${pctText(rec.core[0])}`, rec.core[0].ids));
+  if (rec.core[0]) blocks.push(blk(`Core build${pct(rec.core[0])}`, rec.core[0].ids));
   ['item4', 'item5', 'item6'].forEach((k, i) => {
     if (rec[k].length) blocks.push(blk(`${i + 4}th item options`, rec[k].map((e) => e.id)));
   });
@@ -519,34 +523,88 @@ function itemBlocks(rec) {
   return blocks;
 }
 
-// Items vir 'n champion: sy eie games as daar 'n kern-build is, anders wat soortgelyke champions
-// (dieselfde klas, bv. mages) in dieselfde rol in high-elo koop. So kry jy altyd 'n item set in die winkel.
-const ITEM_MIN_GAMES = 5;
-const CLASS_MIN_GAMES = 15;
-const CLASS_NAMES = { Mage: 'mage', Fighter: 'fighter', Tank: 'tank', Marksman: 'marksman', Assassin: 'assassin', Support: 'support' };
-function itemsFor(championId, role, vs) {
-  const b = buildFor(championId, role, false, vs);
-  if (b.rec && b.rec.games >= ITEM_MIN_GAMES && b.rec.core.length) {
-    return { rec: b.rec, role: b.role, kind: 'champion', games: b.rec.games };
+// Items vir 'n champion met te min eie games in die rol vir 'n volle build. Items hang meer van die champion
+// af as van die rol, so ons gebruik (getoets teen die regte data, sien README):
+//  1. sy eie games in ander rolle as daar genoeg is (10+),
+//  2. anders sy paar eie games plus die 3 champions wat die meeste soos hy items koop,
+//  3. anders (heeltemal nuwe champion) die champions wat volgens Riot se data die meeste soos hy is.
+// Begin-items kom altyd uit die rol self, want dit verskil per rol (jungle, support, lane).
+const ITEM_OWN_GAMES = 10;
+const NB_K = 3;
+const NB_MIN_GAMES = 25;
+const ITEM_CACHE_MS = 10 * 60 * 1000;
+const itemCache = new Map();
+let itemProfiles = { key: '', at: 0, map: {} };
+const ITEM_ROLES = (role) => (role === 'UTILITY' ? ['UTILITY'] : ['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM']);
+const itemDataKey = () => `${db.data.matches}:${remoteInfo.matches}:${remoteInfo.updated}`;
+function getItemProfiles() {
+  const key = itemDataKey();
+  if (itemProfiles.key === key && Date.now() - itemProfiles.at < ITEM_CACHE_MS) return itemProfiles.map;
+  const map = {};
+  for (const id of Object.keys(DD.champions)) map[id] = builds.itemProfile(db.statsForRoles(Number(id), builds.ROLES));
+  itemProfiles = { key, at: Date.now(), map };
+  return map;
+}
+function similarChampions(championId, role) {
+  const profiles = getItemProfiles();
+  const mine = profiles[championId];
+  const meta = DD.champions[championId];
+  const score = mine && mine.games
+    ? (id) => builds.profileSimilarity(mine, profiles[id])
+    : (id) => builds.metaSimilarity(meta, DD.champions[id]);
+  const ranked = Object.keys(DD.champions).filter((id) => Number(id) !== championId)
+    .map((id) => ({ id: Number(id), score: score(id) })).sort((a, b) => b.score - a.score);
+  const out = [];
+  let games = 0;
+  for (const c of ranked) {
+    if (out.length >= NB_K && games >= NB_MIN_GAMES) break;
+    const st = db.statsFor(c.id, role).stats;
+    if (st.games < 3) continue;
+    out.push({ id: c.id, stats: st });
+    games += st.games;
+  }
+  return out;
+}
+function itemsFor(championId, role, vs, strict = false) {
+  const b = buildFor(championId, role, strict && !!role, vs);
+  if (b.rec && b.rec.games >= MIN_GAMES && b.rec.core.length) {
+    return { rec: b.rec, role: b.role, kind: 'champion', games: b.rec.games, similar: [] };
   }
   const useRole = role || b.role || (riotPositions.map[championId] || [])[0] || '';
-  const tags = DD && DD.champions[championId] ? (DD.champions[championId].tags || []) : [];
-  if (!useRole || !tags.length) return null;
-  // Eers champions met dieselfde hoofklas (bv. Fighter), dan die tweede klas (bv. Tank) as daar te min games is
-  for (const tag of tags.slice(0, 2)) {
-    const ids = Object.entries(DD.champions).filter(([id, c]) => Number(id) !== championId && (c.tags || [])[0] === tag).map(([id]) => Number(id));
-    const stats = db.statsForMany(ids, useRole);
-    if (stats.games < CLASS_MIN_GAMES) continue;
-    const rec = builds.recommend(stats, null);
-    if (!rec.core.length) continue;
-    if (DD.champions[championId].id === 'Cassiopeia') rec.boots = []; // Cassiopeia kan nie boots koop nie
-    return { rec, role: useRole, kind: 'class', tag, className: CLASS_NAMES[tag] || tag.toLowerCase(), games: stats.games };
-  }
-  return null;
+  if (!useRole || !DD || !DD.champions[championId]) return null;
+  const key = `${championId}:${useRole}:${itemDataKey()}`;
+  const hit = itemCache.get(key);
+  if (hit && Date.now() - hit.at < ITEM_CACHE_MS) return hit.v;
+  const v = computeItems(championId, useRole);
+  if (itemCache.size > 500) itemCache.clear();
+  itemCache.set(key, { at: Date.now(), v });
+  return v;
+}
+function computeItems(championId, role) {
+  const own = db.statsForRoles(championId, ITEM_ROLES(role));
+  const ownRole = db.statsFor(championId, role).stats;
+  const nbList = similarChampions(championId, role);
+  const nb = builds.weightedMerge(nbList.map((e) => ({ s: e.stats, w: 1 })));
+  let stats, kind;
+  if (own.games >= ITEM_OWN_GAMES) { stats = own; kind = 'own'; }
+  else if (own.games && nb.games) { stats = builds.weightedMerge([{ s: own, w: (2 * nb.games) / own.games / 3 }, { s: nb, w: 1 }]); kind = 'mixed'; }
+  else if (nb.games) { stats = nb; kind = 'similar'; }
+  else if (own.games) { stats = own; kind = 'own'; }
+  else return null;
+  const rec = builds.recommend(stats, null);
+  if (!rec.core.length && !rec.items.length) return null;
+  // Begin-items uit hierdie rol: sy eie as hy al 'n paar games hier het, anders die soortgelyke champions s'n
+  const startFrom = ownRole.games >= 3 ? ownRole : nb.games ? nb : null;
+  if (startFrom) rec.start = builds.recommend(startFrom, null).start;
+  if (DD.champions[championId].id === 'Cassiopeia') rec.boots = []; // Cassiopeia kan nie boots koop nie
+  return {
+    rec, role, kind, games: own.games, roleGames: ownRole.games,
+    similar: kind === 'own' ? [] : nbList.map((e) => ({ championId: e.id, name: DD.champions[e.id].name, games: e.stats.games })),
+  };
 }
 function itemSetTitle(champName, it, vsName) {
   const role = ROLE_NAMES[it.role] || '';
-  if (it.kind === 'class') return `RiftScout ${champName} ${role} (${it.className} items)`.replace(/\s+/g, ' ');
+  if (it.kind === 'similar') return `RiftScout ${champName} ${role} (like ${it.similar.map((c) => c.name).slice(0, 2).join(', ')})`.replace(/\s+/g, ' ');
   return `RiftScout ${champName} ${role}${vsName ? ` vs ${vsName}` : ''}`.replace(/\s+/g, ' ').trim();
 }
 
@@ -574,7 +632,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
       // Nog min eie games vir hierdie champion: die items wat sy soort champions in hierdie rol koop
       const it = itemsFor(championId, pos, vs);
       results.items = it
-        ? await lcu.importItemSet(championId, itemSetTitle(champ.name, it), itemBlocks(it.rec))
+        ? await lcu.importItemSet(championId, itemSetTitle(champ.name, it), itemBlocks(it.rec, it.kind === 'mixed' || it.kind === 'similar'))
         : { ok: false, error: 'no item data for this champion yet' };
       if (it) results.items.kind = it.kind;
     }
@@ -1167,10 +1225,10 @@ app.get('/api/builds/champion/:id', wrap(async (req, res) => {
   if (!b.rec || b.rec.games < MIN_GAMES) {
     if (!b.role) b.role = (riotPositions.map[id] || [])[0] || '';
     b.riot = lcuState.connected ? await lcu.recommendedPage(id, b.role).catch(() => null) : null;
-    const it = itemsFor(id, b.role, vs);
+    const it = itemsFor(id, b.role, vs, req.query.strict === '1');
     if (it) {
       const r = it.rec;
-      b.items = { kind: it.kind, className: it.className || '', role: it.role, games: it.games,
+      b.items = { kind: it.kind, similar: it.similar, role: it.role, games: it.games, roleGames: it.roleGames,
         start: r.start.slice(0, 1), boots: r.boots.slice(0, 2), core: r.core.slice(0, 2), item4: r.item4, item5: r.item5, item6: r.item6 };
     }
   }
