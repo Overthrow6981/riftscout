@@ -77,6 +77,9 @@ test('gedeelde build-data (saamgepak) laai, en counters wys game- en lane-%', as
   assert.equal(annie.games, 8);
   assert.equal(annie.wr, 0.75);
   assert.equal(annie.laneWr, 5 / 8);
+  // Daar is altyd ook sterk keuses in die rol by (sonder die vyand en sonder die teen-keuses), sodat jy 'n paar kry
+  assert.ok(Array.isArray(c.best) && c.best.length >= 1, 'ook sterk keuses in die rol');
+  assert.ok(c.best.every((x) => x.championId !== 238 && !c.counters.some((k) => k.championId === x.championId)));
   const best = (await call(port, 'GET', '/api/builds/best?role=MIDDLE')).json.best;
   assert.ok(best.some((x) => x.championId === 1));
   // Ná lock-in: hoe vaar jou eie champion (Annie) teen die vyand (Zed)
