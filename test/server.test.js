@@ -139,3 +139,12 @@ test('aktiwiteit-log en "Close Blitz" (net op Windows)', async () => {
     assert.ok(after.json.events.some((e) => /Could not close Blitz/.test(e.msg)));
   }
 });
+
+test('die aktiwiteit-lys bly ná \'n herbegin (uit riftscout.log)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-log-'));
+  fs.writeFileSync(path.join(dir, 'riftscout.log'), '2026-11-21T19:30:00.000Z Champ select started (your role: ADC).\nnie \'n datum nie\n2026-11-21T19:30:02.000Z Auto-import for Jinx ADC: runes ok, items ok\n');
+  // (laaste toets: 'n tweede begin met 'n ander datavouer, soos ná 'n herbegin van die app)
+  const p2 = await require('../server').startServer({ port: 0, dataDir: dir });
+  const a = await call(p2, 'GET', '/api/activity');
+  assert.deepEqual(a.json.events.map((e) => e.msg), ['Auto-import for Jinx ADC: runes ok, items ok', 'Champ select started (your role: ADC).']);
+});
