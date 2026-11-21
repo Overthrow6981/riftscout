@@ -475,6 +475,7 @@ async function openSettings() {
     $('prefSpells').checked = p.autoSpells;
     $('prefOpenCs').checked = p.openOnChampSelect;
     $('prefReplace').checked = p.replacePages;
+    $('prefBlitz').checked = p.replaceBlitzSets;
   } catch { /* gebruik wat daar is */ }
   $('settings').classList.remove('hidden');
 }
@@ -505,6 +506,7 @@ $('settingsSave').addEventListener('click', async () => {
       autoSpells: $('prefSpells').checked,
       openOnChampSelect: $('prefOpenCs').checked,
       replacePages: $('prefReplace').checked,
+      replaceBlitzSets: $('prefBlitz').checked,
     });
     $('apiKey').value = '';
     msg.textContent = 'Settings saved.';
@@ -808,7 +810,7 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}` : v.error}`);
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}${v.removedBlitz ? ' (Blitz\'s set removed)' : ''}` : v.error}`);
   if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
   return parts.join(' · ');
 }
