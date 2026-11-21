@@ -49,10 +49,12 @@ const DEFAULT_PREFS = {
   autoSpells: true,         // sit ook summoner spells outomaties (net op Summoner's Rift)
   replacePages: true,       // as al die rune pages vol is: vervang die huidige een (soos Blitz)
   openOnChampSelect: true,  // bring RiftScout na vore sodra champ select begin
-  overlay: true,            // wys die oorleg in die spel
-  overlayPosition: 'right', // right | left | top-right
 };
-function getPrefs() { return { ...DEFAULT_PREFS, ...(loadConfig().prefs || {}) }; }
+function getPrefs() {
+  // Net bekende voorkeure (ou instellings, bv. van die verwyderde in-game oorleg, word geïgnoreer)
+  const saved = Object.entries(loadConfig().prefs || {}).filter(([k]) => k in DEFAULT_PREFS);
+  return { ...DEFAULT_PREFS, ...Object.fromEntries(saved) };
+}
 
 // ---------- Streke ----------
 // platform (vir summoner/league/mastery) -> regional route (vir match-v5)
@@ -943,97 +945,6 @@ async function getLobby() {
   return lobbyPromise;
 }
 
-const tierText = (r) => {
-  if (!r) return 'Unranked';
-  const t = r.tier.charAt(0) + r.tier.slice(1).toLowerCase();
-  return ['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(r.tier) ? t : `${t} ${r.rank}`;
-};
-
-// ---------- Oorleg: alles wat die oorleg in die spel nodig het ----------
-const LIVE_POSITIONS = { TOP: 'TOP', JUNGLE: 'JUNGLE', MIDDLE: 'MIDDLE', BOTTOM: 'BOTTOM', UTILITY: 'UTILITY' };
-function nextSkill(rec, abilities, level) {
-  const lv = (k) => (abilities && abilities[k] && abilities[k].abilityLevel) || 0;
-  const used = lv('Q') + lv('W') + lv('E') + lv('R');
-  if (used >= level) return null;
-  const seq = rec && rec.skills[0] ? rec.skills[0].key : '';
-  if (seq[used]) return seq[used];
-  const rCap = level >= 16 ? 3 : level >= 11 ? 2 : level >= 6 ? 1 : 0;
-  if (lv('R') < rCap) return 'R';
-  const order = rec && rec.maxOrder[0] ? rec.maxOrder[0].key.split('>') : ['Q', 'W', 'E'];
-  const cap = Math.min(5, Math.ceil(level / 2));
-  return order.find((k) => lv(k) < cap) || order[0];
-}
-
-async function overlayData() {
-  const live = await getLiveData();
-  if (!live.inGame) return { inGame: false };
-  const d = live.data || {};
-  const ap = d.activePlayer || {};
-  const myName = ap.riotIdGameName || ap.summonerName || String(ap.riotId || '').split('#')[0];
-  // Eers op die volle Riot ID (Naam#TAG) – twee spelers kan dieselfde naam met 'n ander tag hê
-  const me = (ap.riotId && (d.allPlayers || []).find((p) => p.riotId === ap.riotId))
-    || (d.allPlayers || []).find((p) => (p.riotIdGameName || p.summonerName) === myName) || null;
-  const dd = await getDDragon().catch(() => DD);
-  const raw = me ? String(me.rawChampionName || '') : '';
-  const ddId = raw.startsWith('game_character_displayname_') ? raw.slice(27) : '';
-  let championId = 0;
-  let champion = null;
-  if (dd) for (const [key, c] of Object.entries(dd.champions)) if (c.id === ddId) { championId = Number(key); champion = c; }
-  const role = me ? LIVE_POSITIONS[me.position] || '' : '';
-  const champKey = (p) => {
-    const r = String((p && p.rawChampionName) || '');
-    const idStr = r.startsWith('game_character_displayname_') ? r.slice(27) : '';
-    if (dd) for (const [key, c] of Object.entries(dd.champions)) if (c.id === idStr) return Number(key);
-    return 0;
-  };
-  const opp = me && role ? (d.allPlayers || []).find((p) => p.team !== me.team && LIVE_POSITIONS[p.position] === role) : null;
-  const vsId = opp ? champKey(opp) : 0;
-  const b = championId ? buildFor(championId, role, false, vsId || null) : null;
-  const rec = b && b.rec && b.rec.games >= MIN_GAMES ? b.rec : null;
-  const owned = me ? (me.items || []).map((it) => it.itemID) : [];
-  const itemRec = rec || (championId ? (itemsFor(championId, role, vsId || null) || {}).rec : null);
-  const pathIds = itemRec ? builds.buildPath(itemRec) : [];
-  const next = pathIds.find((id) => !owned.includes(id)) || null;
-  const s = (me && me.scores) || {};
-  const minutes = (d.gameData && d.gameData.gameTime ? d.gameData.gameTime : 0) / 60;
-  return {
-    inGame: true,
-    ddVersion: dd ? dd.version : null,
-    time: d.gameData ? d.gameData.gameTime : 0,
-    champion: champion ? { id: champion.id, name: champion.name } : null,
-    role,
-    level: ap.level || (me && me.level) || 1,
-    gold: ap.currentGold || 0,
-    kda: [s.kills || 0, s.deaths || 0, s.assists || 0],
-    cs: s.creepScore || 0,
-    csPerMin: minutes >= 1 ? (s.creepScore || 0) / minutes : 0,
-    owned,
-    path: pathIds.map((id) => ({ id, name: dd && dd.items[id] ? dd.items[id].name : `Item ${id}`, gold: dd && dd.items[id] ? dd.items[id].gold : 0, owned: owned.includes(id) })),
-    next,
-    nextSkill: nextSkill(rec, ap.abilities, ap.level || 1),
-    maxOrder: rec && rec.maxOrder[0] ? rec.maxOrder[0].key : null,
-    games: rec ? rec.games : 0,
-    vs: vsId && dd && dd.champions[vsId] ? {
-      scout: (() => {
-        const enemy = lobby.data && lobby.data.phase === 'InGame'
-          ? lobby.data.teams.flatMap((t) => t.players).find((p) => p.championId === vsId && p.teamId !== lobby.data.myTeamId) : null;
-        if (!enemy || enemy.hidden) return null;
-        const r = enemy.solo || enemy.flex;
-        const g = r && r.losses != null ? r.wins + r.losses : 0;
-        return {
-          rank: tierText(r), wr: g ? r.wins / g : null, games: g,
-          mastery: enemy.mastery ? enemy.mastery.points : null, tags: enemy.tags,
-        };
-      })(),
-      id: dd.champions[vsId].id,
-      name: dd.champions[vsId].name,
-      games: rec && rec.vs ? rec.vs.games : 0,
-      wins: rec && rec.vs ? rec.vs.wins : 0,
-      specific: !!(rec && rec.fromMatchup.length),
-    } : null,
-  };
-}
-
 // ---------- Roetes ----------
 const app = express();
 app.disable('x-powered-by');
@@ -1088,9 +999,8 @@ app.post('/api/prefs', wrap(async (req, res) => {
   const b = req.body || {};
   const cfg = loadConfig();
   const p = { ...(cfg.prefs || {}) };
-  for (const k of ['collectBuilds', 'autoImport', 'autoSpells', 'replacePages', 'openOnChampSelect', 'overlay']) if (typeof b[k] === 'boolean') p[k] = b[k];
+  for (const k of ['collectBuilds', 'autoImport', 'autoSpells', 'replacePages', 'openOnChampSelect']) if (typeof b[k] === 'boolean') p[k] = b[k];
   if (typeof b.crawlRegion === 'string' && (b.crawlRegion === '' || PLATFORMS[b.crawlRegion])) p.crawlRegion = b.crawlRegion;
-  if (['right', 'left', 'top-right'].includes(b.overlayPosition)) p.overlayPosition = b.overlayPosition;
   cfg.prefs = p;
   saveConfig(cfg);
   updateCrawler();
@@ -1199,7 +1109,6 @@ app.get('/api/me', wrap(async (req, res) => {
   res.json({ connected: m.connected, riotId: m.riotId, region: m.region, level: m.level, profileIconId: m.profileIconId });
 }));
 app.get('/api/lobby', wrap(async (req, res) => res.json(await getLobby())));
-app.get('/api/overlay', wrap(async (req, res) => res.json(await overlayData())));
 
 app.get('/api/ddragon', wrap(async (req, res) => {
   try { res.json(await getDDragon()); }
