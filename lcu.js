@@ -169,6 +169,37 @@ async function importRunes(rune, name, replaceCurrent) {
   };
 }
 
+// Die rune page wat nou in League gekies is (naam en id)
+async function currentRunePage() {
+  const r = await request('GET', '/lol-perks/v1/currentpage');
+  return r.status === 200 && r.data ? { id: r.data.id, name: String(r.data.name || '') } : null;
+}
+const isBlitzPage = (p) => !!p && /blitz/i.test(p.name) && !/^riftscout/i.test(p.name);
+
+// Loop die Blitz-app op hierdie PC? (Blitz se X-knoppie sit dit net in die taakbalk by die horlosie.)
+let blitzCache = { at: 0, running: false };
+function isBlitzRunning() {
+  if (process.platform !== 'win32') return Promise.resolve(false);
+  if (Date.now() - blitzCache.at < 15000) return Promise.resolve(blitzCache.running);
+  return new Promise((resolve) => {
+    execFile('tasklist', ['/FI', 'IMAGENAME eq Blitz.exe', '/FO', 'CSV', '/NH'], { timeout: 5000, windowsHide: true }, (err, out) => {
+      const running = !err && /"blitz\.exe"/i.test(String(out || ''));
+      blitzCache = { at: Date.now(), running };
+      resolve(running);
+    });
+  });
+}
+// Maak Blitz toe (net as die gebruiker op die knoppie in RiftScout klik)
+function closeBlitz() {
+  if (process.platform !== 'win32') return Promise.resolve({ ok: false, error: 'Only on Windows.' });
+  return new Promise((resolve) => {
+    execFile('taskkill', ['/IM', 'Blitz.exe', '/T', '/F'], { timeout: 10000, windowsHide: true }, (err) => {
+      blitzCache = { at: 0, running: false };
+      resolve(err ? { ok: false, error: 'Could not close Blitz. Right-click the Blitz icon by the clock and choose Quit.' } : { ok: true });
+    });
+  });
+}
+
 // Item sets van RiftScout en van die Blitz-app vir een champion
 const forChamp = (s, championId) => (s.associatedChampions || []).includes(championId);
 const isRiftScoutSet = (s, championId) => String(s.title || '').startsWith('RiftScout') && forChamp(s, championId);
@@ -394,6 +425,7 @@ async function gameSession() {
 
 module.exports = {
   state, importRunes, importItemSet, itemSetStatus, isBlitzSet, setSpells, identity,
+  currentRunePage, isBlitzPage, isBlitzRunning, closeBlitz,
   lookupRiotId, summonerByPuuid, ranked, masteries, matchList, game, gameSession, okPuuid,
   recommendedPositions, recommendedPage,
 };

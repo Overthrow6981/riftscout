@@ -630,7 +630,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
     const page = await lcu.recommendedPage(championId, pos).catch(() => null);
     if (!page) return { ok: false, retry: true, championId, error: `No runes for ${champ.name} yet – is the League client open?` };
     const results = {};
-    if (what.has('runes')) results.runes = await lcu.importRunes(page, `RiftScout ${champ.name}`, getPrefs().replacePages);
+    if (what.has('runes')) results.runes = await importRunes(page, `RiftScout ${champ.name}`, getPrefs().replacePages);
     if (what.has('items')) {
       // Nog min eie games vir hierdie champion: die items wat sy soort champions in hierdie rol koop
       const it = itemsFor(championId, pos, vs);
@@ -648,7 +648,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
   const results = {};
   const replace = getPrefs().replacePages;
   const runePage = rec.runes[runeIndex] || rec.runes[0]; // die bladsy wat jy in die app gekies het
-  if (what.has('runes') && runePage) results.runes = await lcu.importRunes(runePage.page, `RiftScout ${champ.name}`, replace);
+  if (what.has('runes') && runePage) results.runes = await importRunes(runePage.page, `RiftScout ${champ.name}`, replace);
   const vsName = rec.vs && DD && DD.champions[rec.vs.championId] ? DD.champions[rec.vs.championId].name : '';
   const setTitle = `RiftScout ${champ.name} ${ROLE_NAMES[b.role] || ''}${vsName && rec.fromMatchup.length ? ` vs ${vsName}` : ''}`.trim();
   if (what.has('items')) results.items = await importItems(championId, champ.name, setTitle, itemBlocks(rec));
@@ -670,6 +670,41 @@ let hoverSince = { key: '', at: 0 };
 let prevPhase = null;
 const champSelectListeners = [];
 function onChampSelectStart(fn) { champSelectListeners.push(fn); }
+// ---------- Aktiwiteit-log ----------
+// Wat RiftScout in champ select gedoen het (en of Blitz iets oorgeskryf het): in Settings te sien en in riftscout.log
+const activity = [];
+function logEvent(msg) {
+  const e = { at: Date.now(), msg: String(msg).slice(0, 300) };
+  activity.push(e);
+  if (activity.length > 40) activity.shift();
+  try {
+    const file = path.join(DATA_DIR, 'riftscout.log');
+    try { if (fs.statSync(file).size > 256 * 1024) fs.renameSync(file, file + '.old'); } catch { /* nog geen log */ }
+    fs.appendFileSync(file, `${new Date(e.at).toISOString()} ${e.msg}\n`);
+  } catch { /* log is net 'n hulpmiddel */ }
+}
+const resultText = (r) => (!r ? '' : r.ok ? 'ok' : `failed (${r.error || 'unknown'})`);
+
+// Rune page in League sit, en onthou dit sodat ons dit kan herstel as Blitz sy eie page daarna kies
+let runeGuard = null;
+let lcuWasConnected = false;
+async function importRunes(page, name, replace) {
+  const r = await lcu.importRunes(page, name, replace);
+  if (r.ok) runeGuard = { page, name, replace, fixes: 0, nextCheck: Date.now() + GUARD_EVERY_MS };
+  return r;
+}
+async function guardRunes() {
+  const g = runeGuard;
+  if (!g || Date.now() < g.nextCheck || !getPrefs().replaceBlitzSets) return;
+  g.nextCheck = Date.now() + GUARD_EVERY_MS;
+  if (g.fixes >= GUARD_MAX_FIXES) return;
+  const cur = await lcu.currentRunePage().catch(() => null);
+  if (!lcu.isBlitzPage(cur)) return; // jou eie keuse of RiftScout s'n: los dit
+  g.fixes++;
+  const r = await lcu.importRunes(g.page, g.name, g.replace).catch(() => null);
+  logEvent(`Blitz switched to its rune page "${cur.name}" – RiftScout put "${g.name}" back: ${resultText(r)}`);
+}
+
 // Item set in League sit, en onthou dit sodat ons kan kyk of 'n ander app (bv. Blitz) dit daarna oorskryf
 let itemGuard = null;
 const GUARD_EVERY_MS = 4000;
@@ -691,7 +726,16 @@ async function guardItemSet() {
   const bad = !st.ours || !st.first || (g.opts.removeBlitz && st.blitz > 0);
   if (!bad) return;
   g.fixes++;
-  await lcu.importItemSet(g.championId, g.title, g.blocks, g.opts).catch(() => null);
+  const r = await lcu.importItemSet(g.championId, g.title, g.blocks, g.opts).catch(() => null);
+  logEvent(`${st.ours ? 'Blitz put its item set first' : 'Another app removed RiftScout\'s item set'} – restored "${g.title}": ${resultText(r)}`);
+}
+
+// Loop Blitz? Dan oorskryf dit RiftScout se runes en items wanneer jy kies
+let blitzRunning = false;
+async function checkBlitz() {
+  const now = await lcu.isBlitzRunning().catch(() => false);
+  if (now !== blitzRunning) logEvent(now ? 'The Blitz app is running – it also imports runes and items when you pick.' : 'Blitz is no longer running.');
+  blitzRunning = now;
 }
 
 let lcuBusy = false;
@@ -701,6 +745,11 @@ async function lcuTick() {
   try {
     const st = await lcu.state();
     if (st.connected) await refreshRiotPositions();
+    if (st.connected) await checkBlitz(); // hoogstens elke 15 s
+    if (!!st.connected !== lcuWasConnected) {
+      lcuWasConnected = !!st.connected;
+      logEvent(st.connected ? 'Connected to the League client.' : 'The League client is closed or RiftScout can\'t reach it.');
+    }
     if (st.champSelect) {
       const cs = st.champSelect;
       cs.enemyRoles = enemyRoles(cs.enemies || []);
@@ -712,6 +761,8 @@ async function lcuTick() {
     if (st.phase === 'ChampSelect' && prevPhase !== 'ChampSelect') {
       lastImport = null; // nuwe champ select: ou invoer-boodskap weg
       itemGuard = null;
+      runeGuard = null;
+      logEvent(`Champ select started${st.champSelect && st.champSelect.role ? ` (your role: ${ROLE_NAMES[st.champSelect.role] || st.champSelect.role})` : ' (no role – runes only)'}${blitzRunning ? ' – Blitz is running too' : ''}.`);
       for (const fn of champSelectListeners) { try { fn(); } catch { /* nie ons probleem nie */ } }
     }
     prevPhase = st.phase;
@@ -720,12 +771,17 @@ async function lcuTick() {
     if (st.connected || me.at === 0) whoAmI().catch(() => {});
     if ((API_KEY || st.connected) && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
     // Laaste kontrole net voor die game laai (Blitz skryf soms op daardie oomblik), dan klaar
-    if (itemGuard && lcuState.phase !== 'ChampSelect') {
-      if (['GameStart', 'InProgress'].includes(lcuState.phase)) { itemGuard.nextCheck = 0; await guardItemSet(); }
+    if ((itemGuard || runeGuard) && lcuState.phase !== 'ChampSelect') {
+      if (['GameStart', 'InProgress'].includes(lcuState.phase)) {
+        if (itemGuard) { itemGuard.nextCheck = 0; await guardItemSet(); }
+        if (runeGuard) { runeGuard.nextCheck = 0; await guardRunes(); }
+      }
       itemGuard = null;
+      runeGuard = null;
     }
     if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; lastSpellKey = ''; vsOverride = null; manualRunesFor = 0; return; }
     await guardItemSet();
+    await guardRunes();
     const cs = lcuState.champSelect;
     const prefs = getPrefs();
     if (!cs || !cs.championId || !prefs.autoImport) return;
@@ -744,11 +800,16 @@ async function lcuTick() {
     if (!what.size) { lastAutoKey = key; return; }
     const result = await doImport(cs.championId, cs.role, what, cs, cs.vs);
     lastImport = { ...result, auto: true };
+    const cname = (DD && DD.champions[cs.championId] && DD.champions[cs.championId].name) || `champion ${cs.championId}`;
+    const parts = Object.entries(result.results || {}).map(([k, v]) => `${k} ${resultText(v)}${v && v.removedBlitz ? ' (removed Blitz\'s set)' : ''}`);
+    logEvent(`Auto-import for ${cname}${cs.role ? ` ${ROLE_NAMES[cs.role] || cs.role}` : ''}${cs.vs ? ` vs ${(DD.champions[cs.vs] || {}).name || cs.vs}` : ''}: ${parts.join(', ') || result.error || 'nothing imported'}`);
     if (!result.retry) { // nog te min data: probeer weer sodra daar meer is
       lastAutoKey = key;
       if (what.has('spells')) lastSpellKey = champKey;
     }
-  } catch { /* volgende keer weer */ } finally {
+  } catch (e) {
+    logEvent(`Auto-import error: ${e && e.message ? e.message : e}`); // volgende keer weer
+  } finally {
     lcuBusy = false;
   }
 }
@@ -1202,8 +1263,16 @@ app.post('/api/lcu/vs', wrap(async (req, res) => {
 
 app.get('/api/lcu/state', (req, res) => {
   const p = getPrefs();
-  res.json({ ...lcuState, lastImport, autoImport: p.autoImport, autoSpells: p.autoSpells });
+  res.json({ ...lcuState, lastImport, autoImport: p.autoImport, autoSpells: p.autoSpells, blitzRunning });
 });
+app.get('/api/activity', (req, res) => res.json({ events: activity.slice().reverse() }));
+app.post('/api/blitz/close', wrap(async (req, res) => {
+  requireJson(req);
+  const r = await lcu.closeBlitz();
+  logEvent(r.ok ? 'Closed the Blitz app (you clicked "Close Blitz").' : `Could not close Blitz: ${r.error}`);
+  if (r.ok) blitzRunning = false;
+  res.json(r);
+}));
 app.post('/api/lcu/import', wrap(async (req, res) => {
   requireJson(req);
   const championId = Number(req.body.championId);
