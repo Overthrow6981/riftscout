@@ -684,6 +684,18 @@ function logEvent(msg) {
   } catch { /* log is net 'n hulpmiddel */ }
 }
 const resultText = (r) => (!r ? '' : r.ok ? 'ok' : `failed (${r.error || 'unknown'})`);
+// Ná 'n herbegin: laai die laaste inskrywings uit riftscout.log, sodat die lys in Settings nie leeg begin nie
+function loadActivity() {
+  try {
+    const lines = fs.readFileSync(path.join(DATA_DIR, 'riftscout.log'), 'utf8').trim().split('\n').slice(-40);
+    activity.length = 0;
+    for (const line of lines) {
+      const i = line.indexOf(' ');
+      const at = Date.parse(line.slice(0, i));
+      if (i > 0 && Number.isFinite(at)) activity.push({ at, msg: line.slice(i + 1).slice(0, 300) });
+    }
+  } catch { /* nog geen log */ }
+}
 
 // Rune page in League sit, en onthou dit sodat ons dit kan herstel as Blitz sy eie page daarna kies
 let runeGuard = null;
@@ -1310,6 +1322,7 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
   CONFIG_FILE = path.join(DATA_DIR, 'config.json');
   CONFIG = null;
   fs.mkdirSync(CACHE_DIR, { recursive: true });
+  loadActivity();
   const saved = loadConfig().apiKey;
   if (saved) API_KEY = saved;
 
