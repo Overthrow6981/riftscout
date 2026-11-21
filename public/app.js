@@ -98,6 +98,7 @@ $('searchForm').addEventListener('submit', (e) => {
 let mine = null;          // { riotId, region, connected, ... }
 let viewingOther = false;
 let autoLoadedKey = '';
+let autoRetry = { key: '', n: 0, at: 0 }; // jou eie profiel het leeg gelaai: 'n paar keer weer probeer
 const REGION_LABEL = Object.fromEntries([...$('region').options].map((o) => [o.value, o.textContent]));
 
 async function pollMe() {
@@ -113,12 +114,21 @@ async function pollMe() {
   $('meChip').title = (m.connected ? 'Signed in to League as ' : 'Last League account: ') + m.riotId + ' — click to open your profile';
   $('meChip').classList.remove('hidden');
   const key = `${m.region}:${m.riotId.toLowerCase()}`;
-  if (key === autoLoadedKey || viewingOther) return;
+  if (viewingOther) return;
+  if (key === autoLoadedKey) {
+    // Die League-kliënt het nog nie jou games gehad nie: hoogstens 3 keer weer probeer, elke 20 s
+    if (!(current && autoRetry.key === key && autoRetry.n < 3 && Date.now() >= autoRetry.at && !loadedMatches.length)) return;
+    autoRetry.n++;
+    autoRetry.at = Date.now() + 20000;
+    search(m.region, m.riotId);
+    return;
+  }
   $('region').value = m.region;
   $('riotId').value = m.riotId;
   // Sonder sleutel kom die profiel uit League self, so wag tot League oop is
   if (!hasKey && !m.connected) return;
   autoLoadedKey = key;
+  autoRetry = { key, n: 0, at: Date.now() + 20000 };
   search(m.region, m.riotId);
 }
 
@@ -148,8 +158,8 @@ async function search(region, riotId) {
     nextStart = 0;
     renderProfile(profile);
     showMessage('Loading matches…');
-    await loadMatches();
-    showMessage('');
+    // Net as die wedstryde gelaai het die boodskap weg: anders bly die fout staan (bv. privaat geskiedenis)
+    if (await loadMatches()) showMessage('');
   } catch (err) {
     showMessage(err.message, true);
   } finally {
@@ -200,8 +210,11 @@ async function loadMatches() {
     $('matches').insertAdjacentHTML('beforeend', data.matches.map(renderMatch).join(''));
     btn.classList.toggle('hidden', !data.hasMore);
     if (!loadedMatches.length) $('matches').innerHTML = '<div class="notice">No recent matches found.</div>';
+    return true;
   } catch (err) {
     showMessage(err.message, true);
+    if (!loadedMatches.length) btn.classList.add('hidden');
+    return false;
   } finally {
     btn.disabled = false;
     btn.textContent = 'Load more';
@@ -500,6 +513,7 @@ function setHasKey(v) {
 }
 $('settingsBtn').addEventListener('click', openSettings);
 $('settingsCancel').addEventListener('click', () => $('settings').classList.add('hidden'));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('settings').classList.contains('hidden')) $('settings').classList.add('hidden'); });
 $('settings').addEventListener('click', (e) => { if (e.target === $('settings')) $('settings').classList.add('hidden'); });
 $('removeKey').addEventListener('click', async () => {
   try { setHasKey((await postJson('/api/settings', { apiKey: '' })).hasKey); openSettings(); } catch (err) { $('settingsMsg').textContent = err.message; }
@@ -820,7 +834,7 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}${v.removedBlitz ? ' (Blitz\'s set removed)' : ''}` : v.error}`);
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}${v.method === 'shop' ? ' (opens first in the in-game shop)' : ''}${v.removedBlitz ? ' (Blitz\'s set removed)' : ''}${v.notSelected ? ' (but League did not select the page – pick it yourself)' : ''}` : v.error}`);
   if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
   return parts.join(' · ');
 }
@@ -876,14 +890,17 @@ async function loadBest(role) {
 // Teen-keuses plus sterk keuses in die rol: altyd minstens 8 om van te kies (teen-keuses eerste)
 const MIN_PICKS = 8;
 function pickRows(c) {
-  const vs = ((c && c.counters) || []).map((x) => ({ ...x, src: 'vs' }));
+  // Counters wat meer verloor as wen (bv. 0 uit 3) kom ná die sterk keuses in die rol, nie bo-aan nie
+  const all = ((c && c.counters) || []);
+  const vs = all.filter((x) => x.wr >= 0.5).map((x) => ({ ...x, src: 'vs' }));
+  const weak = all.filter((x) => !(x.wr >= 0.5)).map((x) => ({ ...x, src: 'vsweak' }));
   const overall = ((c && c.best) || []).map((x) => ({ ...x, src: 'overall' }));
-  return vs.concat(overall.slice(0, Math.max(0, MIN_PICKS - vs.length)));
+  return vs.concat(overall.slice(0, Math.max(0, MIN_PICKS - vs.length)), weak);
 }
 // Klein lysie bo-aan: die top 3 keuses wat nog beskikbaar is
 const topPicks = (rows, cs, n = 3) => {
   const taken = takenSet(cs);
-  return rows.filter((x) => !taken.has(x.championId)).slice(0, n);
+  return rows.filter((x) => x.src !== 'vsweak' && !taken.has(x.championId)).slice(0, n);
 };
 const pickChip = (x) => `<span class="pick-chip" data-champ-chip="${x.championId}" title="${x.src === 'overall'
   ? 'Strong pick in this role overall – not enough games vs this enemy yet' : 'Wins most often against this enemy'}">
@@ -894,7 +911,7 @@ const pickChip = (x) => `<span class="pick-chip" data-champ-chip="${x.championId
 function counterTable(list, cs, vsName) {
   const taken = takenSet(cs);
   const cls = (x) => (x >= 0.5 ? 'good' : 'bad');
-  const grp = (x) => (x.src === 'overall' ? 1 : 0);
+  const grp = (x) => (x.src === 'overall' ? 1 : x.src === 'vsweak' ? 2 : 0);
   const sorted = [...list].sort((a, b) => grp(a) - grp(b) || (csSort === 'lane'
     ? ((b.laneScore ?? -1) - (a.laneScore ?? -1))
     : (b.score - a.score)) || b.games - a.games);
@@ -940,6 +957,7 @@ async function renderCsPanel(cs) {
     const c = await loadCounters(cs.vs, cs.role, mineId);
     const rows = pickRows(c);
     const nVs = rows.filter((x) => x.src === 'vs').length;
+    const nWeak = rows.filter((x) => x.src === 'vsweak').length;
     const top = topPicks(rows, cs);
     const picksLine = top.length
       ? `<div class="cs-best"><span class="cb-label">Best picks vs ${esc(vsName)}</span>${top.map(pickChip).join('')}</div>` : '';
@@ -954,7 +972,8 @@ async function renderCsPanel(cs) {
     if (rows.length) {
       inner += counterTable(rows, cs, vsName) + `<div class="sub">Click a champion for its runes and build vs ${esc(vsName)}.
         Game % = wins the game, Lane % = ahead in gold at 15 min.${nVs < rows.length
-          ? ` ${nVs ? `The first ${nVs} are from games vs ${esc(vsName)}; ` : ''}champions marked <i>overall</i> are strong ${roleName} picks – there aren't enough games vs ${esc(vsName)} for them yet.` : ''}</div>`;
+          ? ` ${nVs ? `The first ${nVs} are from games vs ${esc(vsName)}; ` : ''}champions marked <i>overall</i> are strong ${roleName} picks – there aren't enough games vs ${esc(vsName)} for them yet.` : ''}${nWeak
+          ? ` The last ${nWeak === 1 ? 'one has' : `${nWeak} have`} lost more games than ${nWeak === 1 ? 'it' : 'they'} won vs ${esc(vsName)} so far.` : ''}</div>`;
     } else {
       inner += `<div class="sub">No matchup win rates vs ${esc(vsName)} yet – they come from RiftScout's shared match data, which grows every few hours.
         Your runes still import when you lock in.</div>`;
