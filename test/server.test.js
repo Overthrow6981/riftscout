@@ -59,6 +59,9 @@ test('instellings: verkeerde sleutel word geweier, voorkeure word gestoor', asyn
   const p = await call(port, 'POST', '/api/prefs', { body: { autoSpells: false, overlay: true, crawlRegion: 'zz' } });
   assert.equal(p.json.autoSpells, false);
   assert.equal(p.json.overlay, undefined, 'die in-game oorleg bestaan nie meer nie');
+  assert.equal(p.json.replaceBlitzSets, true, 'Blitz se item sets word by verstek vervang');
+  const off = await call(port, 'POST', '/api/prefs', { body: { replaceBlitzSets: false } });
+  assert.equal(off.json.replaceBlitzSets, false);
   assert.equal(p.json.crawlRegion, '', 'onbekende streek word geïgnoreer');
   const st = await call(port, 'GET', '/api/status');
   assert.equal(st.json.hasKey, false);
