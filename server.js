@@ -272,6 +272,15 @@ function simplifyLcuGame(g, puuid) {
   };
 }
 
+// Hoogstens `limit` beloftes tegelyk, volgorde bly behoue (die kliënt haal elke wedstryd by Riot)
+async function mapLimit(list, limit, fn) {
+  const out = new Array(list.length);
+  let next = 0;
+  const worker = async () => { while (next < list.length) { const i = next++; out[i] = await fn(list[i], i); } };
+  await Promise.all(Array.from({ length: Math.min(limit, list.length) }, worker));
+  return out;
+}
+
 // Volledige wedstryd uit die kliënt; verander nooit nie -> stoor op skyf
 async function getClientGame(gameId) {
   const file = path.join(CACHE_DIR, `LCU_${Number(gameId)}.json`);
@@ -628,9 +637,13 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
     // Nog nie genoeg eie data nie: gebruik Riot se aanbevole runes en spells uit die kliënt (dadelik beskikbaar)
     const pos = role || (riotPositions.map[championId] || [])[0] || '';
     const page = await lcu.recommendedPage(championId, pos).catch(() => null);
-    if (!page) return { ok: false, retry: true, championId, error: `No runes for ${champ.name} yet – is the League client open?` };
+    // Geen rune page van Riot nie: items (en die res) steeds invoer, net die runes later weer probeer
+    if (!page && !what.has('items')) return { ok: false, retry: true, championId, error: `No runes for ${champ.name} yet – is the League client open?` };
     const results = {};
-    if (what.has('runes')) results.runes = await importRunes(page, `RiftScout ${champ.name}`, getPrefs().replacePages);
+    if (what.has('runes')) {
+      results.runes = page ? await importRunes(page, `RiftScout ${champ.name}`, getPrefs().replacePages)
+        : { ok: false, error: `no rune page for ${champ.name} from the League client yet` };
+    }
     if (what.has('items')) {
       // Nog min eie games vir hierdie champion: die items wat sy soort champions in hierdie rol koop
       const it = itemsFor(championId, pos, vs);
@@ -639,8 +652,9 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
         : { ok: false, error: 'no item data for this champion yet' };
       if (it) results.items.kind = it.kind;
     }
-    if (what.has('spells') && page.spells.length === 2) results.spells = await lcu.setSpells(...orderSpells(page.spells, cs));
+    if (what.has('spells') && page && page.spells.length === 2) results.spells = await lcu.setSpells(...orderSpells(page.spells, cs));
     return {
+      ...(page ? {} : { retry: true }),
       ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: pos,
       vs: vs || null, vsName: '', matchupSpecific: false, source: 'riot', results, at: Date.now(),
     };
@@ -684,6 +698,17 @@ function logEvent(msg) {
   } catch { /* log is net 'n hulpmiddel */ }
 }
 const resultText = (r) => (!r ? '' : r.ok ? 'ok' : `failed (${r.error || 'unknown'})`);
+// Ekstra inligting in die log: waar die item set heen is, Blitz-sets uitgehaal, rune page nie gekies nie
+function importNote(kind, v) {
+  if (!v || !v.ok) return '';
+  const bits = [];
+  if (kind === 'items') bits.push(v.method === 'shop' ? 'shop file' : 'account item set');
+  if (v.note) bits.push(v.note);
+  if (v.removedBlitz) bits.push(`removed ${v.removedBlitz} Blitz set${v.removedBlitz === 1 ? '' : 's'}`);
+  if (v.replaced) bits.push(`replaced page "${v.replaced}"`);
+  if (v.notSelected) bits.push('page not selected in League');
+  return bits.length ? ` (${bits.join(', ')})` : '';
+}
 // Ná 'n herbegin: laai die laaste inskrywings uit riftscout.log, sodat die lys in Settings nie leeg begin nie
 function loadActivity() {
   try {
@@ -721,10 +746,28 @@ async function guardRunes() {
 let itemGuard = null;
 const GUARD_EVERY_MS = 4000;
 const GUARD_MAX_FIXES = 5;
+// Die winkel maak oop op die set met "priority" en die hoogste sortrank uit League se Config\Global\Recommended-lêers
+// (daar skryf Blitz ook). RiftScout skryf sy set daar; net as dit nie kan nie, in die rekening se item sets.
+let shopFileActive = false; // ons lêer staan in die winkel en moet ná die game weer uit
+async function writeItems(championId, champName, title, blocks, opts) {
+  // Buite champ select (knoppie in die app): in die rekening se item sets, want die winkel-lêer word opgeruim
+  if (!SHOP_BUSY_PHASES.includes(lcuState.phase)) return lcu.importItemSet(championId, title, blocks, opts);
+  const champKey = (DD && DD.champions[championId] && DD.champions[championId].id) || '';
+  const r = await lcu.writeShopItemSet({ championKey: champKey, title, blocks, removeBlitz: opts.removeBlitz }).catch((e) => ({ ok: false, error: e.message }));
+  if (r.ok) {
+    shopFileActive = true;
+    // Ou RiftScout-sets in die rekening (een per champion van vorige weergawes) sou langs hierdie een wys
+    const gone = await lcu.removeAccountSets().catch(() => 0);
+    if (gone) logEvent(`Removed ${gone} old RiftScout item set${gone === 1 ? '' : 's'} from your League account (RiftScout now uses a shop file).`);
+    return r;
+  }
+  const fb = await lcu.importItemSet(championId, title, blocks, opts);
+  return fb.ok ? { ...fb, note: `shop file failed: ${r.error}` } : { ...fb, error: `${fb.error} (shop file: ${r.error})` };
+}
 async function importItems(championId, champName, title, blocks) {
   const opts = { removeBlitz: getPrefs().replaceBlitzSets, champName };
-  const r = await lcu.importItemSet(championId, title, blocks, opts);
-  if (r.ok) itemGuard = { championId, champName, title, blocks, opts, fixes: 0, nextCheck: Date.now() + GUARD_EVERY_MS };
+  const r = await writeItems(championId, champName, title, blocks, opts);
+  if (r.ok) itemGuard = { championId, champName, title, blocks, opts, method: r.method, fixes: 0, nextCheck: Date.now() + GUARD_EVERY_MS };
   return r;
 }
 // Blitz (as dit nog loop) sit sy item sets ook in wanneer jy kies, soms ná RiftScout. Dan herstel ons ons s'n.
@@ -733,13 +776,25 @@ async function guardItemSet() {
   if (!g || Date.now() < g.nextCheck) return;
   g.nextCheck = Date.now() + GUARD_EVERY_MS;
   if (g.fixes >= GUARD_MAX_FIXES) return;
-  const st = await lcu.itemSetStatus(g.championId, g.champName).catch(() => null);
+  const st = g.method === 'shop'
+    ? await lcu.shopItemSetStatus().catch(() => null)
+    : await lcu.itemSetStatus(g.championId, g.champName).catch(() => null);
   if (!st) return;
-  const bad = !st.ours || !st.first || (g.opts.removeBlitz && st.blitz > 0);
+  // Met "Don't let Blitz overwrite RiftScout" af: net ons set terugsit as dit weg is, nie met ander sets baklei nie
+  const bad = !st.ours || (g.opts.removeBlitz && (!st.first || st.blitz > 0));
   if (!bad) return;
   g.fixes++;
-  const r = await lcu.importItemSet(g.championId, g.title, g.blocks, g.opts).catch(() => null);
-  logEvent(`${st.ours ? 'Blitz put its item set first' : 'Another app removed RiftScout\'s item set'} – restored "${g.title}": ${resultText(r)}`);
+  const r = g.method === 'shop'
+    ? await writeItems(g.championId, g.champName, g.title, g.blocks, g.opts).catch(() => null)
+    : await lcu.importItemSet(g.championId, g.title, g.blocks, g.opts).catch(() => null);
+  const why = !st.ours ? 'Another app removed RiftScout\'s item set' : st.blitz > 0 ? 'Blitz wrote its item set again' : 'Another item set was put first';
+  logEvent(`${why} – restored "${g.title}": ${resultText(r)}${r && r.removedBlitz ? ` (removed ${r.removedBlitz} Blitz set${r.removedBlitz === 1 ? '' : 's'})` : ''}`);
+}
+// Ná die game, of as champ select sonder 'n game eindig: ons set uit die winkel (dit sou anders vir elke champion wys)
+async function clearShopFile(reason) {
+  shopFileActive = false;
+  const n = await lcu.clearShopItemSets().catch(() => 0);
+  if (n) logEvent(`Took RiftScout's item set out of the shop (${reason}).`);
 }
 
 // Loop Blitz? Dan oorskryf dit RiftScout se runes en items wanneer jy kies
@@ -750,12 +805,20 @@ async function checkBlitz() {
   blitzRunning = now;
 }
 
+// Fases waarin die winkel-lêer moet bly (die spel lees dit as dit laai; Reconnect laai weer)
+const SHOP_BUSY_PHASES = ['ChampSelect', 'GameStart', 'InProgress', 'Reconnect'];
+let idleTicks = 0;
+let startupShopCleaned = false;
+let lastGamePhaseSeen = false;
+
+let autoRetry = { key: '', n: 0 };
 let lcuBusy = false;
 async function lcuTick() {
   if (lcuBusy) return;
   lcuBusy = true;
   try {
     const st = await lcu.state();
+    if (st.stale) return; // kliënt antwoord stadig: hierdie keer oorslaan (nie "toe" en nie "fase None" nie)
     if (st.connected) await refreshRiotPositions();
     if (st.connected) await checkBlitz(); // hoogstens elke 15 s
     if (!!st.connected !== lcuWasConnected) {
@@ -778,6 +841,21 @@ async function lcuTick() {
       for (const fn of champSelectListeners) { try { fn(); } catch { /* nie ons probleem nie */ } }
     }
     prevPhase = st.phase;
+    // Winkel-lêer opruim sodra dit nie meer nodig is nie (ná die game, of champ select sonder game), en een keer
+    // ná die begin (oorblyfsel as RiftScout vroeër toegemaak is). Twee rustige tikke, nie op 'n kort oorgang nie.
+    if (st.connected && !SHOP_BUSY_PHASES.includes(st.phase)) {
+      idleTicks++;
+      if ((shopFileActive || !startupShopCleaned) && idleTicks >= 2) {
+        const why = shopFileActive ? (lastGamePhaseSeen ? 'the game ended' : 'champ select ended without a game') : 'left over from last time';
+        startupShopCleaned = true;
+        lastGamePhaseSeen = false;
+        await clearShopFile(why);
+      }
+    } else if (st.connected) {
+      idleTicks = 0;
+      if (['GameStart', 'InProgress', 'Reconnect'].includes(st.phase)) lastGamePhaseSeen = true;
+      if (st.phase === 'ChampSelect') lastGamePhaseSeen = false;
+    }
     // Hou "is League oop?" dadelik op datum (en tel jou rekening en bediener op sodra League oopmaak)
     if (!!st.connected !== !!me.connected) me.at = 0;
     if (st.connected || me.at === 0) whoAmI().catch(() => {});
@@ -813,11 +891,15 @@ async function lcuTick() {
     const result = await doImport(cs.championId, cs.role, what, cs, cs.vs);
     lastImport = { ...result, auto: true };
     const cname = (DD && DD.champions[cs.championId] && DD.champions[cs.championId].name) || `champion ${cs.championId}`;
-    const parts = Object.entries(result.results || {}).map(([k, v]) => `${k} ${resultText(v)}${v && v.removedBlitz ? ' (removed Blitz\'s set)' : ''}`);
-    logEvent(`Auto-import for ${cname}${cs.role ? ` ${ROLE_NAMES[cs.role] || cs.role}` : ''}${cs.vs ? ` vs ${(DD.champions[cs.vs] || {}).name || cs.vs}` : ''}: ${parts.join(', ') || result.error || 'nothing imported'}`);
-    if (!result.retry) { // nog te min data: probeer weer sodra daar meer is
+    const parts = Object.entries(result.results || {}).map(([k, v]) => `${k} ${resultText(v)}${importNote(k, v)}`);
+    // Moet nog 'n keer probeer (bv. Riot se rune page nog nie gereed nie): hoogstens 5 keer, net die eerste keer in die log
+    autoRetry = autoRetry.key === key ? { key, n: autoRetry.n + 1 } : { key, n: 0 };
+    if (!result.retry || autoRetry.n === 0) {
+      logEvent(`Auto-import for ${cname}${cs.role ? ` ${ROLE_NAMES[cs.role] || cs.role}` : ''}${cs.vs ? ` vs ${(DD.champions[cs.vs] || {}).name || cs.vs}` : ''}: ${parts.join(', ') || result.error || 'nothing imported'}`);
+    }
+    if (!result.retry || autoRetry.n >= 4) {
       lastAutoKey = key;
-      if (what.has('spells')) lastSpellKey = champKey;
+      if (what.has('spells') || (result.results && result.results.spells)) lastSpellKey = champKey;
     }
   } catch (e) {
     logEvent(`Auto-import error: ${e && e.message ? e.message : e}`); // volgende keer weer
@@ -1062,6 +1144,10 @@ app.use((req, res, next) => {
   if (!okHosts.includes(req.headers.host)) return res.status(403).send('Forbidden');
   const origin = req.headers.origin;
   if (origin && !okHosts.some((h) => origin === `http://${h}`)) return res.status(403).json({ error: 'Forbidden' });
+  // Geen ander webwerf mag RiftScout in 'n raam laai nie (clickjacking)
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   next();
 });
 
@@ -1123,7 +1209,14 @@ app.get('/api/profile', wrap(async (req, res) => {
   const cfg = loadConfig();
   if (cfg.lastRegion !== region) { cfg.lastRegion = region; saveConfig(cfg); }
 
-  if (!API_KEY) {
+  // Uit die League-kliënt as daar geen sleutel is, én as League oop is op hierdie bediener (selfs met 'n sleutel:
+  // 'n ontwikkelaar-sleutel verval elke 24 uur, en die kliënt het dit nie nodig nie)
+  let viaClient = !API_KEY;
+  if (!viaClient) {
+    const w = await whoAmI().catch(() => null);
+    viaClient = !!(w && w.connected && w.region && w.region === region);
+  }
+  if (viaClient) {
     // Geen sleutel: alles uit die League-kliënt
     const m = await requireClient(region);
     const profile = await cached(`cprofile:${riotId.toLowerCase()}`, 60 * 1000, async () => {
@@ -1180,16 +1273,37 @@ app.get('/api/matches', wrap(async (req, res) => {
   const count = Math.min(20, Math.max(1, Number(req.query.count) || 10));
   if (isClientPuuid(puuid)) {
     // Profiel kom uit die League-kliënt -> wedstryde ook
-    await requireClient(region);
-    const list = await lcu.matchList(puuid, start, start + count - 1).catch((err) => {
+    const m = await requireClient(region);
+    const self = !!m.puuid && m.puuid.toLowerCase() === puuid.toLowerCase();
+    // Die hele venster een keer (die kliënt ignoreer later reekse), dan self 'n bladsy uitsny
+    const all = await cached(`lcuhist:${puuid}`, 60 * 1000, () => lcu.matchWindow(puuid, { self })).catch((err) => {
       if (err.lcuClosed) throw err;
+      logEvent(`Match history: the League client gave an error for ${self ? 'your' : 'a'} profile (${err.lcuStatus || err.status || '?'}: ${err.message}).`);
       throw httpError(502, "Couldn't load this player's match history from the League client (their profile may be private).");
     });
-    const results = await Promise.all(list.map((g) => getClientGame(g.gameId)
-      .then((full) => simplifyLcuGame(full, puuid))
-      .catch((err) => { if (err.lcuClosed) throw err; return null; })));
+    if (!all.length) memCache.delete(`lcuhist:${puuid}`); // 'n leë lys nie onthou nie: volgende keer weer vra
+    const list = all.slice(start, start + count);
+    // Volle wedstryde een vir een (hoogstens 3 tegelyk); as dit misluk, die lys se eie ry (net jou eie speler)
+    let failed = 0;
+    const one = (g) => getClientGame(g.gameId)
+      .then((full) => {
+        if (!full || !(full.participants || []).length) throw new Error('empty game');
+        return simplifyLcuGame(full, puuid);
+      })
+      .catch((err) => {
+        if (err.lcuClosed) throw err;
+        failed++;
+        if (!(g.participants || []).length) return null;
+        const own = simplifyLcuGame(g, puuid);
+        if (own.me) own.me.killParticipation = 0;
+        return { ...own, partial: true };
+      });
+    const results = await mapLimit(list, 3, one);
     const matches = results.filter(Boolean).sort((a, b) => b.endedAt - a.endedAt);
-    return res.json({ matches, hasMore: list.length === count });
+    if (self && (!all.length || failed)) {
+      logEvent(`Match history: the League client listed ${all.length} game${all.length === 1 ? '' : 's'} for you${failed ? `, ${failed} of ${list.length} could not be loaded in full` : ''}.`);
+    }
+    return res.json({ matches, hasMore: start + count < all.length });
   }
   const route = matchRoute(region);
   const ids = await riot(route, `/lol/match/v5/matches/by-puuid/${puuid}/ids?start=${start}&count=${count}`);
@@ -1282,7 +1396,14 @@ app.post('/api/blitz/close', wrap(async (req, res) => {
   requireJson(req);
   const r = await lcu.closeBlitz();
   logEvent(r.ok ? 'Closed the Blitz app (you clicked "Close Blitz").' : `Could not close Blitz: ${r.error}`);
-  if (r.ok) blitzRunning = false;
+  if (r.ok) {
+    blitzRunning = false;
+    // Blitz kry nie kans om sy sets op te ruim nie: anders wys sy laaste set in die winkel vir elke champion
+    if (getPrefs().replaceBlitzSets) {
+      const n = await lcu.removeBlitzShopFiles().catch(() => 0);
+      if (n) logEvent(`Removed ${n} item set${n === 1 ? '' : 's'} Blitz left in League's shop folder.`);
+    }
+  }
   res.json(r);
 }));
 app.post('/api/lcu/import', wrap(async (req, res) => {
@@ -1357,6 +1478,12 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
 }
 
 function saveBuildData() { if (crawler) crawler.save(); }
+// RiftScout gaan toe: buite champ select en 'n game ons set uit die winkel (anders wys dit vir elke champion
+// totdat RiftScout weer oopmaak). In champ select of 'n game bly dit vir hierdie game; die volgende begin ruim op.
+function cleanupOnQuit() {
+  if (SHOP_BUSY_PHASES.includes(lcuState.phase)) return;
+  try { lcu.clearShopItemSetsSync(); } catch { /* nie ons probleem nie */ }
+}
 
 // ---------- Updates (main.js meld die stand; die blad wys dit) ----------
 let updateState = { state: 'none' };
@@ -1369,7 +1496,7 @@ async function isBusy() {
   return (await getLiveData()).inGame;
 }
 
-module.exports = { startServer, getLiveData, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy, onChampSelectStart };
+module.exports = { startServer, getLiveData, getPrefs, saveBuildData, cleanupOnQuit, setUpdateState, onInstallRequest, isBusy, onChampSelectStart };
 
 if (require.main === module) {
   startServer({ port: Number(process.env.PORT) || 3000 }).then((port) => {

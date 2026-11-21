@@ -4,7 +4,7 @@
 
 const { app, BrowserWindow, shell, dialog } = require('electron');
 const { autoUpdater } = require('electron-updater');
-const { startServer, getPrefs, saveBuildData, setUpdateState, onInstallRequest, isBusy, onChampSelectStart } = require('./server');
+const { startServer, getPrefs, saveBuildData, cleanupOnQuit, setUpdateState, onInstallRequest, isBusy, onChampSelectStart } = require('./server');
 const updates = require('./updater');
 
 let win = null;
@@ -85,5 +85,6 @@ function setupUpdates() {
 
 app.on('will-quit', () => {
   saveBuildData();
+  cleanupOnQuit();
 });
 app.on('window-all-closed', () => app.quit());

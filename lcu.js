@@ -2,6 +2,7 @@
 // Die kliënt loop 'n plaaslike HTTPS-API; die poort en wagwoord kom uit die "lockfile"
 // in die League-installasie, of uit die LeagueClientUx-proses se opdragreël.
 
+const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
@@ -14,10 +15,11 @@ let creds = null;
 let lastLookup = 0;
 let lastProcessLookup = 0;
 
+// lockfile: "LeagueClient:<pid>:<port>:<wagwoord>:<protokol>" (die regte kliënt is altyd https)
 function readLockfile(file) {
   try {
-    const [, , port, password] = fs.readFileSync(file, 'utf8').trim().split(':');
-    if (port && password) return { port: Number(port), token: password };
+    const [, , port, password, protocol] = fs.readFileSync(file, 'utf8').trim().split(':');
+    if (port && password) return { port: Number(port), token: password, protocol: protocol === 'http' ? 'http' : 'https', dir: path.dirname(file) };
   } catch { /* geen lockfile */ }
   return null;
 }
@@ -42,7 +44,9 @@ function fromProcess() {
       const out = String(stdout || '');
       const port = /--app-port=(\d+)/.exec(out);
       const token = /--remoting-auth-token=([\w-]+)/.exec(out);
-      resolve(port && token ? { port: Number(port[1]), token: token[1] } : null);
+      // Die League-gids (bv. E:\Riot Games\League of Legends) vir die winkel se item set-lêers
+      const dir = /"--install-directory=([^"]+)"/.exec(out) || /--install-directory=(\S+)/.exec(out);
+      resolve(port && token ? { port: Number(port[1]), token: token[1], protocol: 'https', dir: dir ? dir[1].replace(/[\\/]+$/, '') : null } : null);
     });
   });
 }
@@ -59,24 +63,38 @@ async function findCreds() {
   return (creds = c);
 }
 
-async function request(method, p, body) {
+// Antwoord: { status, data }. status 0 = League is toe / onbereikbaar.
+// 'n Stadige antwoord (bv. wedstrydgeskiedenis wat die kliënt eers by Riot moet haal) is NIE "League is toe" nie:
+// dan { status: 408, timeout: true } en die verbinding bly.
+const LCU_TIMEOUT_MS = Number(process.env.LCU_TIMEOUT_MS) || 4000;
+async function request(method, p, body, { timeout = LCU_TIMEOUT_MS } = {}) {
   const c = await findCreds();
   if (!c) return { status: 0, data: null };
   const payload = body === undefined ? null : JSON.stringify(body);
   return new Promise((resolve) => {
+    let done = false;
+    const finish = (r) => { if (!done) { done = true; resolve(r); } };
     const headers = { Authorization: 'Basic ' + Buffer.from('riot:' + c.token).toString('base64'), Accept: 'application/json' };
     if (payload) { headers['Content-Type'] = 'application/json'; headers['Content-Length'] = Buffer.byteLength(payload); }
-    const req = https.request({ host: '127.0.0.1', port: c.port, path: p, method, headers, rejectUnauthorized: false, timeout: 4000 }, (res) => {
+    const lib = c.protocol === 'http' ? http : https;
+    const req = lib.request({ host: '127.0.0.1', port: c.port, path: p, method, headers, rejectUnauthorized: false, timeout }, (res) => {
       let buf = '';
+      res.setEncoding('utf8');
       res.on('data', (d) => (buf += d));
       res.on('end', () => {
         let data = null;
         try { data = buf ? JSON.parse(buf) : null; } catch { data = buf; }
-        resolve({ status: res.statusCode, data });
+        finish({ status: res.statusCode, data });
       });
+      // Afgebreekte antwoord: sonder hierdie luisteraar sou 'n 'error' op res die hele app laat val
+      res.on('error', () => finish({ status: 408, data: null, timeout: true }));
+      res.on('aborted', () => finish({ status: 408, data: null, timeout: true }));
     });
-    req.on('timeout', () => req.destroy());
-    req.on('error', () => { creds = null; lastLookup = 0; resolve({ status: 0, data: null }); });
+    req.on('timeout', () => { req.destroy(Object.assign(new Error('LCU timeout'), { code: 'LCU_TIMEOUT' })); });
+    req.on('error', (err) => {
+      if (err && err.code === 'LCU_TIMEOUT') return finish({ status: 408, data: null, timeout: true });
+      creds = null; lastLookup = 0; finish({ status: 0, data: null });
+    });
     if (payload) req.write(payload);
     req.end();
   });
@@ -87,10 +105,13 @@ const ok = (r) => r.status >= 200 && r.status < 300;
 async function state() {
   const ph = await request('GET', '/lol-gameflow/v1/gameflow-phase');
   if (ph.status === 0) return { connected: false, phase: null, champSelect: null };
+  // Kliënt is net besig (stadige antwoord): hierdie keer oorslaan, nie "League is toe" of "fase None" nie
+  if (ph.timeout) return { connected: true, phase: null, champSelect: null, stale: true };
   const phase = typeof ph.data === 'string' ? ph.data : 'None';
   let champSelect = null;
   if (phase === 'ChampSelect') {
     const s = await request('GET', '/lol-champ-select/v1/session');
+    if (s.timeout) return { connected: true, phase, champSelect: null, stale: true };
     if (s.status === 200 && s.data) {
       const me = (s.data.myTeam || []).find((x) => x.cellId === s.data.localPlayerCellId);
       // Vyandige picks: uit theirTeam én uit die voltooide pick-aksies (wat ook al eerste opdaag)
@@ -133,7 +154,24 @@ async function state() {
   return { connected: true, phase, champSelect };
 }
 
+// Velde wat die kliënt self uit die runes aflei: nie terugstuur nie (dit sou die ou runes beskryf)
+const DERIVED_PAGE_FIELDS = ['uiPerks', 'pageKeystone', 'primaryStyleName', 'primaryStyleIconPath', 'secondaryStyleName',
+  'secondaryStyleIconPath', 'tooltipBgPath', 'autoModifiedSelections'];
+const isOurPage = (p) => !!p && String(p.name || '').startsWith('RiftScout');
+
+// Maak seker die bladsy is die een wat in League gekies is (en kyk dit na)
+async function selectPage(id, name) {
+  const cur = await request('GET', '/lol-perks/v1/currentpage');
+  if (ok(cur) && cur.data && (cur.data.id === id || (id == null && cur.data.name === name))) return true;
+  if (id == null) return false;
+  await request('PUT', '/lol-perks/v1/currentpage', id);
+  const again = await request('GET', '/lol-perks/v1/currentpage');
+  return ok(again) && !!again.data && again.data.id === id;
+}
+
 // rune = { primaryStyleId, subStyleId, primary[4], secondary[2], shards[3] }
+// RiftScout hou een eie bladsy en skryf dit oor (soos ander apps doen): uitvee en weer maak het 'n oomblik
+// gelaat waarin League 'n ander bladsy kies, en 'n nuwe bladsy kan "Max pages reached" gee.
 async function importRunes(rune, name, replaceCurrent) {
   const body = {
     name: name.slice(0, 25),
@@ -144,29 +182,44 @@ async function importRunes(rune, name, replaceCurrent) {
   };
   const pages = await request('GET', '/lol-perks/v1/pages');
   if (pages.status !== 200) return { ok: false, error: 'League client not reachable.' };
-  for (const p of pages.data || []) {
-    if (String(p.name || '').startsWith('RiftScout') && p.isDeletable) await request('DELETE', `/lol-perks/v1/pages/${p.id}`);
+  const ours = (pages.data || []).filter((p) => isOurPage(p) && p.isDeletable && p.isEditable !== false);
+  let id = null;
+  let r;
+  if (ours[0]) {
+    const page = { ...ours[0] };
+    for (const f of DERIVED_PAGE_FIELDS) delete page[f];
+    r = await request('PUT', `/lol-perks/v1/pages/${ours[0].id}`, { ...page, ...body });
+    if (ok(r)) id = ours[0].id;
   }
-  let r = await request('POST', '/lol-perks/v1/pages', body);
-  if (ok(r)) return { ok: true };
-  if (replaceCurrent) {
-    // Alle bladsye vol: vervang die huidige bladsy (of anders die laaste een wat jy kan uitvee)
-    const cur = await request('GET', '/lol-perks/v1/currentpage');
-    const left = await request('GET', '/lol-perks/v1/pages');
-    const own = ((left.status === 200 && left.data) || []).filter((p) => p.isDeletable);
-    const target = (cur.status === 200 && cur.data && cur.data.isDeletable) ? cur.data : own[own.length - 1];
-    if (target) {
-      await request('DELETE', `/lol-perks/v1/pages/${target.id}`);
-      r = await request('POST', '/lol-perks/v1/pages', body);
-      if (ok(r)) return { ok: true, replaced: target.name };
+  // Ekstra RiftScout-bladsye (van ouer weergawes) weg; as die oorskryf misluk het, ook die eerste een
+  for (const p of ours.slice(id == null ? 0 : 1)) await request('DELETE', `/lol-perks/v1/pages/${p.id}`);
+  let replaced;
+  if (id == null) {
+    r = await request('POST', '/lol-perks/v1/pages', body);
+    if (ok(r)) id = r.data && r.data.id != null ? r.data.id : null;
+    else if (replaceCurrent) {
+      // Alle bladsye vol: vervang die huidige bladsy (of anders die laaste een wat jy kan uitvee)
+      const cur = await request('GET', '/lol-perks/v1/currentpage');
+      const left = await request('GET', '/lol-perks/v1/pages');
+      const own = ((left.status === 200 && left.data) || []).filter((p) => p.isDeletable);
+      const target = (cur.status === 200 && cur.data && cur.data.isDeletable) ? cur.data : own[own.length - 1];
+      if (target) {
+        await request('DELETE', `/lol-perks/v1/pages/${target.id}`);
+        r = await request('POST', '/lol-perks/v1/pages', body);
+        if (ok(r)) { id = r.data && r.data.id != null ? r.data.id : null; replaced = target.name; }
+      }
+    }
+    if (!ok(r)) {
+      return {
+        ok: false,
+        error: replaceCurrent
+          ? 'All your rune pages are full and none of them can be replaced. Delete one in the League client.'
+          : 'No free rune page. Delete one in the client, or turn on "Replace a rune page when all are full" in Settings.',
+      };
     }
   }
-  return {
-    ok: false,
-    error: replaceCurrent
-      ? 'All your rune pages are full and none of them can be replaced. Delete one in the League client.'
-      : 'No free rune page. Delete one in the client, or turn on "Replace a rune page when all are full" in Settings.',
-  };
+  const selected = await selectPage(id, body.name);
+  return { ok: true, ...(replaced ? { replaced } : {}), ...(selected ? {} : { notSelected: true }) };
 }
 
 // Die rune page wat nou in League gekies is (naam en id)
@@ -174,7 +227,7 @@ async function currentRunePage() {
   const r = await request('GET', '/lol-perks/v1/currentpage');
   return r.status === 200 && r.data ? { id: r.data.id, name: String(r.data.name || '') } : null;
 }
-const isBlitzPage = (p) => !!p && /blitz/i.test(p.name) && !/^riftscout/i.test(p.name);
+const isBlitzPage = (p) => !!p && /\bblitz\b/i.test(p.name) && !/^riftscout/i.test(p.name);
 
 // Loop die Blitz-app op hierdie PC? (Blitz se X-knoppie sit dit net in die taakbalk by die horlosie.)
 let blitzCache = { at: 0, running: false };
@@ -200,16 +253,177 @@ function closeBlitz() {
   });
 }
 
-// Item sets van RiftScout en van die Blitz-app vir een champion
-const forChamp = (s, championId) => (s.associatedChampions || []).includes(championId);
-const isRiftScoutSet = (s, championId) => String(s.title || '').startsWith('RiftScout') && forChamp(s, championId);
-// Blitz noem sy sets "Blitz: Crit Miss Fortune" ens. (nie "Blitzcrank ..." nie)
-const isBlitzSet = (s, championId, champName) => /^blitz\b/i.test(String(s.title || '').trim())
-  && (forChamp(s, championId) || (!(s.associatedChampions || []).length && !!champName && String(s.title).includes(champName)));
+// ---------- Item sets ----------
+// League kry item sets van twee plekke:
+//  1. Die rekening se lys (/lol-item-sets/v1/item-sets/{summonerId}/sets). Die kliënt se skema vir 'n set het
+//     GEEN "priority"-veld nie (dit word weggegooi), so so 'n set kan nie bo 'n "priority"-lêer kom nie.
+//  2. Lêers in <League>\Config\Global\Recommended\*.json, wat die spel lees as dit laai, vir ELKE champion.
+//     Die Blitz-app skryf sy sets net hier ("!!!blitz-0.json" ens., "Blitz: Crit Miss Fortune") met priority en
+//     'n sortrank van 1 000 000 000, en haal dit eers ná die game uit. As Blitz toegemaak (of geforseer gestop)
+//     word voor dit opruim, bly sy set agter en maak die winkel vir elke champion daarop oop.
+// Daarom skryf RiftScout sy set ook as so 'n lêer, met 'n hoër rang, en haal dit ná die game uit.
+const SHOP_FILE_PREFIX = '!!!riftscout-';
+const SHOP_RANK = 2100000000; // bo Blitz (1e9) en ander apps (2e9), binne die spel se 32-bis sortrank
+const MAX_SET_FILE = 512 * 1024;
 
+const forChamp = (s, championId) => (s.associatedChampions || []).includes(championId);
+const isRiftScoutSet = (s, championId) => String(s.title || '').startsWith('RiftScout') && (championId == null || forChamp(s, championId));
+// Blitz noem sy sets "Blitz: Crit Miss Fortune" ens. (nie "Blitzcrank ..." nie)
+const isBlitzTitle = (t) => /^blitz\b/i.test(String(t || '').trim());
+const isBlitzSet = (s, championId, champName) => isBlitzTitle(s.title)
+  && (forChamp(s, championId) || (!(s.associatedChampions || []).length && !!champName && String(s.title).includes(champName)));
+const isBlitzFile = (name, set) => /^!*blitz[-_ ]/i.test(name) || (!!set && isBlitzTitle(set.title));
+
+// Waar is League geïnstalleer (bv. E:\Riot Games\League of Legends)? Die kliënt sê self; anders die lockfile se gids.
+let installCache = { at: 0, dir: null };
+async function installDir() {
+  if (installCache.dir && Date.now() - installCache.at < 10 * 60e3) return installCache.dir;
+  let dir = null;
+  const r = await request('GET', '/data-store/v1/install-dir');
+  if (ok(r) && typeof r.data === 'string' && r.data.trim()) dir = r.data.trim();
+  if (!dir && creds && creds.dir) dir = creds.dir;
+  if (dir) installCache = { at: Date.now(), dir };
+  return dir || installCache.dir; // League toe: die laaste bekende gids (om ná die game op te ruim)
+}
+
+// Die gidse waar die spel item set-lêers lees (Garena/Tencent hou Config in 'n "Game"-gids langsaan)
+function shopFolders(dir) {
+  if (!dir) return [];
+  const isDir = (d) => { try { return fs.statSync(d).isDirectory(); } catch { return false; } };
+  return [path.join(dir, 'Config'), path.join(dir, '..', 'Game', 'Config')].filter(isDir)
+    .map((c) => path.join(c, 'Global', 'Recommended'));
+}
+function readSetFile(file) {
+  try {
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.size > MAX_SET_FILE) return null;
+    return JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
+  } catch { return null; }
+}
+function listSetFiles(folder) {
+  let names = [];
+  try { names = fs.readdirSync(folder); } catch { return []; }
+  return names.filter((n) => n.toLowerCase().endsWith('.json')).map((n) => ({ name: n, file: path.join(folder, n) }));
+}
+const fileRank = (s) => (s && s.priority === true ? 1e10 : 0) + (Number(s && s.sortrank) || 0);
+
+// Die set in die vorm wat Blitz (en ander apps) in Config\Global\Recommended skryf
+function shopSet(championKey, title, blocks) {
+  return {
+    title: String(title).slice(0, 75),
+    championKey: championKey || '',
+    map: 'any',
+    mode: 'any',
+    type: 'custom',
+    priority: true,
+    sortrank: SHOP_RANK,
+    blocks: blocks.map((b) => ({
+      recMath: false, minSummonerLevel: -1, maxSummonerLevel: -1, showIfSummonerSpell: '', hideIfSummonerSpell: '',
+      type: String(b.type || 'Items').slice(0, 60),
+      items: (b.items || []).map((it) => ({ id: String(it.id), count: Number(it.count) || 1 })),
+    })).filter((b) => b.items.length),
+  };
+}
+
+// Lêerwerk (los getoets): skryf ons set, haal ons ou lêers uit, en as gevra die Blitz-app se oorblywende sets
+function writeShopFiles(folders, set, { removeBlitz = false, extraBlitzFolders = [] } = {}) {
+  let removedBlitz = 0;
+  const written = [];
+  let error = null;
+  for (const folder of folders) {
+    try {
+      fs.mkdirSync(folder, { recursive: true });
+      const file = path.join(folder, `${SHOP_FILE_PREFIX}0.json`);
+      for (const f of listSetFiles(folder)) {
+        if (f.name.startsWith(SHOP_FILE_PREFIX)) { if (f.file !== file) fs.rmSync(f.file, { force: true }); continue; }
+        if (removeBlitz && isBlitzFile(f.name, readSetFile(f.file))) { fs.rmSync(f.file, { force: true }); removedBlitz++; }
+      }
+      const tmp = path.join(folder, `.riftscout-${process.pid}-${Date.now()}.tmp`); // nie .json nie: die spel lees dit nooit half
+      fs.writeFileSync(tmp, JSON.stringify(set));
+      fs.renameSync(tmp, file);
+      written.push(file);
+    } catch (e) { error = e; }
+  }
+  if (removeBlitz) {
+    for (const folder of extraBlitzFolders) {
+      for (const f of listSetFiles(folder)) {
+        const s = readSetFile(f.file);
+        if (s && isBlitzTitle(s.title)) { try { fs.rmSync(f.file, { force: true }); removedBlitz++; } catch { /* gesluit */ } }
+      }
+    }
+  }
+  return { written, removedBlitz, error: written.length ? null : error };
+}
+function removeShopFiles(folders, { ours = true, blitz = false } = {}) {
+  let removed = 0;
+  for (const folder of folders) {
+    for (const f of listSetFiles(folder)) {
+      const mine = f.name.startsWith(SHOP_FILE_PREFIX);
+      if ((ours && mine) || (blitz && !mine && isBlitzFile(f.name, readSetFile(f.file)))) {
+        try { fs.rmSync(f.file, { force: true }); removed++; } catch { /* Windows hou dit dalk gesluit: volgende keer weer */ }
+      }
+    }
+  }
+  return removed;
+}
+// Is ons lêer daar, en wys die winkel dit eerste (geen ander lêer met priority en 'n hoër of gelyke rang)?
+function shopFilesStatus(folders) {
+  let ours = false;
+  let first = true;
+  let blitz = 0;
+  for (const folder of folders) {
+    for (const f of listSetFiles(folder)) {
+      const s = readSetFile(f.file);
+      if (f.name.startsWith(SHOP_FILE_PREFIX)) { if (s) ours = true; continue; }
+      if (isBlitzFile(f.name, s)) blitz++;
+      if (s && fileRank(s) >= fileRank({ priority: true, sortrank: SHOP_RANK })) first = false;
+    }
+  }
+  return { ours, first: ours && first, blitz };
+}
+
+let shopFoldersUsed = new Set();
+const champFolder = (dir, championKey) => (dir && championKey ? path.join(dir, 'Config', 'Champions', championKey, 'Recommended') : null);
+
+// Sit RiftScout se set in die winkel (Config\Global\Recommended). removeBlitz: haal Blitz se oorblywende sets uit.
+async function writeShopItemSet({ championKey, title, blocks, removeBlitz = false }) {
+  const dir = await installDir();
+  const folders = shopFolders(dir);
+  if (!folders.length) {
+    return { ok: false, error: dir ? `League's Config folder was not found in ${dir}.` : 'Could not find the League install folder.' };
+  }
+  const extra = removeBlitz && champFolder(dir, championKey) ? [champFolder(dir, championKey)] : [];
+  const r = writeShopFiles(folders, shopSet(championKey, title, blocks), { removeBlitz, extraBlitzFolders: extra });
+  for (const f of folders) shopFoldersUsed.add(f);
+  if (!r.written.length) return { ok: false, error: `Could not write the item set file (${(r.error && r.error.code) || 'error'}).` };
+  return { ok: true, method: 'shop', files: r.written, removedBlitz: r.removedBlitz };
+}
+async function shopItemSetStatus() {
+  const folders = shopFolders(await installDir());
+  return folders.length ? shopFilesStatus(folders) : null;
+}
+// Ná die game (of as champ select sonder 'n game eindig): ons set uit die winkel, anders wys dit vir elke champion
+async function clearShopItemSets({ blitz = false } = {}) {
+  const folders = new Set(shopFoldersUsed);
+  try { for (const f of shopFolders(await installDir())) folders.add(f); } catch { /* League toe */ }
+  return removeShopFiles([...folders], { ours: true, blitz });
+}
+// By afsluit van RiftScout (sinchroon): net die gidse wat ons al ken
+function clearShopItemSetsSync() {
+  const folders = new Set(shopFoldersUsed);
+  for (const f of shopFolders(installCache.dir)) folders.add(f);
+  return removeShopFiles([...folders], { ours: true });
+}
+async function removeBlitzShopFiles() {
+  return removeShopFiles(shopFolders(await installDir()), { ours: false, blitz: true });
+}
+
+// ---------- Die rekening se item sets (rugsteun as die lêer nie geskryf kan word nie) ----------
 // Volgorde in die winkel: sets met "priority" eerste, dan die hoogste "sortrank" (aflopend)
 const setRank = (s) => (s.priority ? 1e9 : 0) + (Number(s.sortrank) || 0);
 const visibleFor = (s, championId) => forChamp(s, championId) || !(s.associatedChampions || []).length;
+// Die kliënt weier 'n lys groter as ~64 KB (HTTP 413): hou net RiftScout se nuutste paar sets
+const MAX_OWN_ACCOUNT_SETS = 8;
 
 async function readItemSets() {
   const me = await request('GET', '/lol-summoner/v1/current-summoner');
@@ -235,36 +449,57 @@ async function itemSetStatus(championId, champName) {
   };
 }
 
+// Die nuwe lys: ons set vir hierdie champion eerste, ons ou sets vir dieselfde champion weg, hoogstens
+// MAX_OWN_ACCOUNT_SETS van ons sets altesaam; elke ander set bly net soos dit was.
+function mergeAccountSets(sets, championId, newSet, { removeBlitz = false, champName = '' } = {}) {
+  let removed = 0;
+  let own = 0;
+  const itemSets = [];
+  for (const s of sets || []) {
+    if (isRiftScoutSet(s, championId)) continue;
+    if (isRiftScoutSet(s, null) && ++own >= MAX_OWN_ACCOUNT_SETS) continue;
+    if (removeBlitz && isBlitzSet(s, championId, champName)) { removed++; continue; }
+    itemSets.push(s);
+  }
+  itemSets.unshift(newSet);
+  return { itemSets, removedBlitz: removed };
+}
+
 // removeBlitz: haal die Blitz-app se sets vir hierdie champion uit, sodat RiftScout s'n die een in die winkel is
 async function importItemSet(championId, title, blocks, { removeBlitz = false, champName = '' } = {}) {
   const r = await readItemSets();
   if (r.error) return { ok: false, error: r.error };
   const { url } = r;
   const cur = { data: r.data };
-  let removed = 0;
-  const itemSets = (cur.data.itemSets || []).filter((s) => {
-    if (isRiftScoutSet(s, championId)) return false;
-    if (removeBlitz && isBlitzSet(s, championId, champName)) { removed++; return false; }
-    return true;
-  });
-  // Bo-aan in die winkel: "priority" plus 'n hoër sortrank as enige ander set wat vir hierdie champion wys
-  const top = itemSets.filter((s) => visibleFor(s, championId)).reduce((m, s) => Math.max(m, Number(s.sortrank) || 0), 0);
-  itemSets.unshift({
+  const others = (cur.data.itemSets || []).filter((s) => !isRiftScoutSet(s, championId));
+  // Die hoogste sortrank (die kliënt ken nie "priority" nie, so dit word nie gestuur nie)
+  const top = others.filter((s) => visibleFor(s, championId)).reduce((m, s) => Math.max(m, Number(s.sortrank) || 0), 0);
+  const { itemSets, removedBlitz } = mergeAccountSets(cur.data.itemSets, championId, {
     title: title.slice(0, 75),
     associatedChampions: [championId],
     associatedMaps: [11],
-    blocks,
+    blocks: blocks.map((b) => ({ hideIfSummonerSpell: '', showIfSummonerSpell: '', ...b })),
     map: 'any',
     mode: 'any',
     preferredItemSlots: [],
-    priority: true,
     sortrank: Math.min(top + 1, 2147483647),
     startedFrom: 'blank',
     type: 'custom',
     uid: crypto.randomUUID(),
-  });
+  }, { removeBlitz, champName });
   const put = await request('PUT', url, { ...cur.data, itemSets, timestamp: Date.now() });
-  return ok(put) ? { ok: true, removedBlitz: removed } : { ok: false, error: `Item set import failed (${put.status}).` };
+  return ok(put) ? { ok: true, method: 'account', removedBlitz } : { ok: false, error: `Item set import failed (${put.status}).` };
+}
+
+// RiftScout se sets uit die rekening se lys (ou weergawes het een per champion bygevoeg; die winkel-lêer vervang dit)
+async function removeAccountSets() {
+  const r = await readItemSets();
+  if (r.error) return 0;
+  const sets = r.data.itemSets || [];
+  const keep = sets.filter((s) => !isRiftScoutSet(s, null));
+  if (keep.length === sets.length) return 0;
+  const put = await request('PUT', r.url, { ...r.data, itemSets: keep, timestamp: Date.now() });
+  return ok(put) ? sets.length - keep.length : 0;
 }
 
 async function setSpells(spell1Id, spell2Id) {
@@ -355,6 +590,7 @@ const okPuuid = (p) => typeof p === 'string' && p.length > 20 && p !== EMPTY_PUU
 async function get(p) {
   const r = await request('GET', p);
   if (r.status === 0) { const e = new Error('The League client is not open.'); e.status = 503; e.lcuClosed = true; throw e; }
+  if (r.timeout) { const e = new Error('The League client took too long to answer.'); e.status = 504; throw e; }
   if (!ok(r)) { const e = new Error((r.data && r.data.message) || `League client error ${r.status}`); e.status = r.status === 404 ? 404 : 502; throw e; }
   return r.data;
 }
@@ -397,12 +633,42 @@ async function masteries(puuid) {
     .sort((a, b) => b.points - a.points);
 }
 
-async function matchList(puuid, begIndex, endIndex) {
-  const d = await get(`/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches?begIndex=${begIndex}&endIndex=${endIndex}`);
-  return (d && d.games && Array.isArray(d.games.games)) ? d.games.games : [];
+// Wedstrydgeskiedenis: die kliënt haal dit eers by Riot, so dit kan stadig wees (langer tydsbeperking).
+const HISTORY_TIMEOUT_MS = Number(process.env.LCU_HISTORY_TIMEOUT_MS) || 15000;
+async function getSlow(p) {
+  const r = await request('GET', p, undefined, { timeout: HISTORY_TIMEOUT_MS });
+  if (r.status === 0) { const e = new Error('The League client is not open.'); e.status = 503; e.lcuClosed = true; throw e; }
+  if (r.timeout) { const e = new Error('The League client took too long to answer.'); e.status = 504; throw e; }
+  if (!ok(r)) { const e = new Error((r.data && r.data.message) || `League client error ${r.status}`); e.status = r.status === 404 ? 404 : 502; e.lcuStatus = r.status; throw e; }
+  return r.data;
+}
+const gamesOf = (d) => (d && d.games && Array.isArray(d.games.games) ? d.games.games
+  : d && Array.isArray(d.games) ? d.games : []);
+
+// Die kliënt hou die lys per speler in sy eie geheue: die EERSTE versoek se reeks bepaal hoeveel games dit hou,
+// daarna ignoreer dit begIndex/endIndex en gee altyd dieselfde lys. Vra dus altyd die hele venster (0-49)
+// en sny self 'n bladsy uit. Vir jouself: as daardie lys leeg is, ook die kliënt se eie "current-summoner"-roete.
+const HISTORY_WINDOW = 50;
+async function matchWindow(puuid, { self = false } = {}) {
+  const q = `begIndex=0&endIndex=${HISTORY_WINDOW - 1}`;
+  let games = [];
+  let error = null;
+  try { games = gamesOf(await getSlow(`/lol-match-history/v1/products/lol/${encodeURIComponent(puuid)}/matches?${q}`)); }
+  catch (e) { if (e.lcuClosed || !self) throw e; error = e; }
+  if (self && !games.length) {
+    try { games = gamesOf(await getSlow(`/lol-match-history/v1/products/lol/current-summoner/matches?${q}`)); }
+    catch (e) { throw e.lcuClosed ? e : (error || e); }
+  }
+  // Nuutste eerste, elke game een keer
+  const seen = new Set();
+  return games.filter((g) => g && g.gameId && !seen.has(g.gameId) && seen.add(g.gameId))
+    .sort((a, b) => (b.gameCreation || 0) - (a.gameCreation || 0));
+}
+async function matchList(puuid, begIndex, endIndex, opts) {
+  return (await matchWindow(puuid, opts)).slice(begIndex, endIndex + 1);
 }
 
-const game = (gameId) => get(`/lol-match-history/v1/games/${Number(gameId)}`);
+const game = (gameId) => getSlow(`/lol-match-history/v1/games/${Number(gameId)}`);
 
 // Wie is in jou huidige spel (vanaf die laaiskerm)
 async function gameSession() {
@@ -435,6 +701,9 @@ async function gameSession() {
 module.exports = {
   state, importRunes, importItemSet, itemSetStatus, isBlitzSet, setSpells, identity,
   currentRunePage, isBlitzPage, isBlitzRunning, closeBlitz,
-  lookupRiotId, summonerByPuuid, ranked, masteries, matchList, game, gameSession, okPuuid,
+  installDir, writeShopItemSet, shopItemSetStatus, clearShopItemSets, clearShopItemSetsSync, removeBlitzShopFiles, removeAccountSets,
+  lookupRiotId, summonerByPuuid, ranked, masteries, matchWindow, matchList, game, gameSession, okPuuid,
   recommendedPositions, recommendedPage,
+  // vir die toetse
+  _files: { shopSet, writeShopFiles, removeShopFiles, shopFilesStatus, shopFolders, mergeAccountSets, SHOP_FILE_PREFIX, SHOP_RANK },
 };
