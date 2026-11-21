@@ -113,16 +113,44 @@ test('guessRoles gee elke champion in die span sy beste rol', () => {
   assert.deepEqual(g, { 1: 'MIDDLE', 2: 'JUNGLE', 3: 'BOTTOM', 4: 'UTILITY', 5: 'TOP' });
 });
 
-test('statsForMany tel die games van verskeie champions saam (vir klas-items)', () => {
+test('items vir champions met min games: rolle saam, item-profiel, gewigte', () => {
   const db = new b.BuildDB(path.join(os.tmpdir(), 'rs-many-never-saved.json'));
-  const row = (c, win) => ({ championId: c, role: 'MIDDLE', vs: 0, win, laneWin: null, runes: '8100:8112,8139,8138,8135|8200:8226,8210|5008,5008,5001',
-    spells: '4,14', start: '1056,2003', completed: [3089, 3157, 3135], boots: 3020, maxOrder: 'Q>W>E', skills: 'QWEQQRQWQWRWWEE' });
-  for (let i = 0; i < 4; i++) db.addMatch('16.23', [row(1, true)]);
-  for (let i = 0; i < 6; i++) db.addMatch('16.23', [row(99, i < 3)]);
-  const s = db.statsForMany([1, 99, 555], 'MIDDLE');
+  const row = (c, role, win, completed) => ({ championId: c, role, vs: 0, win, laneWin: null, runes: '8100:8112,8139,8138,8135|8200:8226,8210|5008,5008,5001',
+    spells: '4,14', start: '1056,2003', completed, boots: 3020, maxOrder: 'Q>W>E', skills: 'QWEQQRQWQWRWWEE' });
+  for (let i = 0; i < 4; i++) db.addMatch('16.23', [row(1, 'MIDDLE', true, [3089, 3157, 3135])]);
+  for (let i = 0; i < 6; i++) db.addMatch('16.23', [row(1, 'TOP', i < 3, [3089, 3157, 3135])]);
+  for (let i = 0; i < 5; i++) db.addMatch('16.23', [row(99, 'MIDDLE', true, [3089, 3135, 3157])]);
+  for (let i = 0; i < 5; i++) db.addMatch('16.23', [row(122, 'TOP', true, [3071, 3053, 6333])]);
+  const s = db.statsForRoles(1, ['TOP', 'MIDDLE']);
   assert.equal(s.games, 10);
   assert.equal(s.wins, 7);
-  const rec = b.recommend(s, null);
+  assert.deepEqual(b.recommend(s, null).core[0].ids, [3089, 3157, 3135]);
+  // Annie en Lux koop dieselfde items, Darius heeltemal ander
+  const p1 = b.itemProfile(s), p99 = b.itemProfile(db.statsFor(99, 'MIDDLE').stats), p122 = b.itemProfile(db.statsFor(122, 'TOP').stats);
+  assert.ok(Math.abs(b.profileSimilarity(p1, p99) - 1) < 1e-9);
+  assert.equal(b.profileSimilarity(p1, p122), 0);
+  assert.equal(b.profileSimilarity(p1, b.itemProfile({ games: 0, items: {} })), 0);
+  // Gewigte: 1 game ×3 + 2 games ×1, tellings bly heelgetalle
+  const m = b.weightedMerge([{ s: db.statsFor(122, 'TOP').stats, w: 0.2 }, { s: db.statsFor(99, 'MIDDLE').stats, w: 1 }]);
+  assert.equal(m.games, 6);
+  assert.deepEqual(m.items['3071'], [1, 1]);
+  assert.deepEqual(m.items['3089'], [5, 5]);
+  assert.equal(b.weightedMerge([]).games, 0);
+  // Nuwe champion sonder games: klas, reikafstand en AD/AP tel
+  const mage = { tags: ['Mage'], partype: 'Mana', range: 550, info: { attack: 2, magic: 9 } };
+  const mage2 = { tags: ['Mage', 'Support'], partype: 'Mana', range: 525, info: { attack: 1, magic: 10 } };
+  const fighter = { tags: ['Fighter', 'Tank'], partype: 'None', range: 175, info: { attack: 9, magic: 1 } };
+  assert.ok(b.metaSimilarity(mage, mage2) > b.metaSimilarity(mage, fighter));
+  assert.equal(b.metaSimilarity(mage, null), 0);
+});
+
+test('4de–6de item-opsies wys nie items wat reeds in die kern-build is nie', () => {
+  const db = new b.BuildDB(path.join(os.tmpdir(), 'rs-late-never-saved.json'));
+  const row = (completed) => ({ championId: 1, role: 'MIDDLE', vs: 0, win: true, laneWin: null, runes: '8100:8112,8139,8138,8135|8200:8226,8210|5008,5008,5001',
+    spells: '4,14', start: '1056,2003', completed, boots: 3020, maxOrder: 'Q>W>E', skills: 'QWEQQRQWQWRWWEE' });
+  for (let i = 0; i < 5; i++) db.addMatch('16.23', [row([3089, 3157, 3135, 3100])]);
+  for (let i = 0; i < 2; i++) db.addMatch('16.23', [row([3157, 3089, 3100, 3135])]);
+  const rec = b.recommend(db.statsFor(1, 'MIDDLE').stats, null);
   assert.deepEqual(rec.core[0].ids, [3089, 3157, 3135]);
-  assert.equal(db.statsForMany([], 'MIDDLE').games, 0);
+  assert.deepEqual(rec.item4.map((e) => e.id), [3100], 'Void Staff (3135) is reeds in die kern');
 });

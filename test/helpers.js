@@ -11,6 +11,10 @@ function sharedData() {
   // Annie (1) teen Zed (238): 6 uit 8 gewen, 5 uit 8 voor op 15 min
   for (let i = 0; i < 8; i++) db.addMatch('16.23', [row(1, 238, i < 6, i < 5), row(238, 1, i >= 6, i >= 5)]);
   for (let i = 0; i < 25; i++) db.addMatch('16.23', [row(1, 99, i % 2 === 0, true), row(99, 1, i % 2 === 1, false)]);
+  // Darius (122) het 12 games in Top met sy eie items (vir items in 'n ander rol)
+  const top = (win) => ({ championId: 122, role: 'TOP', vs: 0, win, laneWin: null, runes: '8000:8010,9111,9104,8299|8400:8444,8242|5005,5008,5001',
+    spells: '4,12', start: '1055,2003', completed: [3071, 3053, 6333], boots: 3047, maxOrder: 'Q>E>W', skills: 'QEWQQRQEQEREEWW' });
+  for (let i = 0; i < 12; i++) db.addMatch('16.23', [top(i % 3 !== 0)]);
   return db.data;
 }
 
@@ -21,7 +25,8 @@ function startMock({ riotMode = () => 'ok' } = {}) {
     '/dd/cdn/16.23.1/data/en_US/summoner.json': { data: { SummonerFlash: { key: '4', name: 'Flash', image: { full: 'SummonerFlash.png' } } } },
     '/dd/cdn/16.23.1/data/en_US/runesReforged.json': [{ id: 8100, name: 'Domination', icon: 'd.png', slots: [{ runes: [{ id: 8112, name: 'Electrocute', icon: 'e.png' }] }] }],
     '/dd/cdn/16.23.1/data/en_US/champion.json': { data: { Annie: { key: '1', id: 'Annie', name: 'Annie', tags: ['Mage'] }, Zed: { key: '238', id: 'Zed', name: 'Zed', tags: ['Assassin'] }, Lux: { key: '99', id: 'Lux', name: 'Lux', tags: ['Mage'] },
-      Syndra: { key: '134', id: 'Syndra', name: 'Syndra', tags: ['Mage'] }, Cassiopeia: { key: '69', id: 'Cassiopeia', name: 'Cassiopeia', tags: ['Mage'] } } },
+      Syndra: { key: '134', id: 'Syndra', name: 'Syndra', tags: ['Mage'] }, Cassiopeia: { key: '69', id: 'Cassiopeia', name: 'Cassiopeia', tags: ['Mage'] },
+      Darius: { key: '122', id: 'Darius', name: 'Darius', tags: ['Fighter', 'Tank'] } } },
     '/dd/cdn/16.23.1/data/en_US/item.json': { data: { 3089: { name: "Rabadon's Deathcap", gold: { total: 3600 }, tags: [] } } },
   };
   const server = http.createServer((req, res) => {
