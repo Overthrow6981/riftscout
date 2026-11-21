@@ -345,6 +345,11 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; margin-
 /* Update-balk */
 .update-bar { display: flex; align-items: center; gap: 14px; padding: 9px 24px; background: #1d2a44; border-bottom: 1px solid #2e4470; color: #dce6ff; font-size: 14px; position: sticky; top: 61px; z-index: 4; }
 .update-bar b { color: #fff; }
+.warn-bar { background: #3a2a12; border-bottom-color: #6b4a1a; color: #f3e2c4; }
+.activity { list-style: none; margin: 6px 0 14px; padding: 0; max-height: 180px; overflow: auto; font-size: 13px; border: 1px solid var(--line, #2a2f3a); border-radius: 8px; }
+.activity li { padding: 6px 10px; border-bottom: 1px solid var(--line, #2a2f3a); }
+.activity li:last-child { border-bottom: 0; }
+.activity time { color: var(--muted, #8b93a7); margin-right: 8px; font-variant-numeric: tabular-nums; }
 .update-bar button { margin-left: auto; background: var(--accent, #e5484d); color: #fff; border: 0; font: inherit; font-weight: 700; padding: 6px 14px; border-radius: 8px; cursor: pointer; }
 .update-bar button:disabled { opacity: .6; cursor: default; }
 .ub-track { flex: 1; max-width: 320px; height: 6px; border-radius: 99px; background: rgba(255,255,255,.12); overflow: hidden; }

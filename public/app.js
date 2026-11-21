@@ -461,7 +461,17 @@ async function pollLobby() {
 
 // ---------- Instellings ----------
 let hasKey = false;
+async function loadActivity() {
+  try {
+    const { events } = await api('/api/activity');
+    $('activity').innerHTML = events.length ? events.map((e) =>
+      `<li><time>${esc(new Date(e.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))}</time>${esc(e.msg)}</li>`).join('')
+      : '<li class="sub">Nothing yet – it fills up when you are in champ select.</li>';
+  } catch { /* nie belangrik nie */ }
+}
+
 async function openSettings() {
+  loadActivity();
   $('settingsMsg').textContent = '';
   $('settingsMsg').className = 'hint';
   $('keyState').textContent = hasKey ? '✓ A Riot API key is saved. Paste a new one below to replace it.' : 'No key saved – that\'s fine.';
@@ -967,9 +977,18 @@ $('csPanel').addEventListener('click', async (e) => {
 });
 let lastCs = null;
 
+$('closeBlitz').addEventListener('click', async () => {
+  if (!confirm('Close the Blitz app now? You can open it again any time.')) return;
+  try {
+    const r = await postJson('/api/blitz/close', {});
+    if (r.ok) $('blitzBar').classList.add('hidden'); else alert(r.error);
+  } catch (e) { alert(e.message); }
+});
+
 async function pollLcu() {
   let st;
   try { st = await api('/api/lcu/state'); } catch { return; }
+  $('blitzBar').classList.toggle('hidden', !st.blitzRunning);
   const was = lcuConnected;
   lcuConnected = !!st.connected;
   if (was !== lcuConnected && buildData) renderBuild();

@@ -19,6 +19,10 @@
     <button id="settingsBtn" class="settings-btn" title="Settings">⚙ Settings</button>
   </header>
   <div id="updateBar" class="update-bar hidden"></div>
+  <div id="blitzBar" class="update-bar warn-bar hidden">
+    <span><b>Blitz is running in the background.</b> When you pick a champion it puts its own runes and item set into League, on top of RiftScout's.</span>
+    <button id="closeBlitz" type="button">Close Blitz</button>
+  </div>
 
   <div id="settings" class="modal hidden" role="dialog" aria-label="Settings">
     <div class="modal-box">
@@ -48,7 +52,11 @@
       <label class="check"><input type="checkbox" id="prefAuto" /> Import runes and item set automatically as soon as I pick a champion</label>
       <label class="check"><input type="checkbox" id="prefSpells" /> Also set summoner spells automatically</label>
       <label class="check"><input type="checkbox" id="prefReplace" /> Replace a rune page when all my pages are full</label>
-      <label class="check"><input type="checkbox" id="prefBlitz" /> Remove the Blitz app's item sets for the champion I play, so RiftScout's set is the one in the shop</label>
+      <label class="check"><input type="checkbox" id="prefBlitz" /> Don't let the Blitz app overwrite RiftScout: remove Blitz's item sets for my champion and switch back if Blitz changes my rune page</label>
+
+      <h3 class="set-h">Recent activity</h3>
+      <p class="hint">What RiftScout did in champ select. If something doesn't work, send a screenshot of this list.</p>
+      <ul id="activity" class="activity"><li class="sub">Nothing yet.</li></ul>
 
       <div id="settingsMsg" class="hint"></div>
       <div class="modal-actions">
