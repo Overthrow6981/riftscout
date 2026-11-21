@@ -20,4 +20,7 @@ test('Blitz se rune page word herken, jou eie en RiftScout s\'n nie', () => {
   assert.ok(!lcu.isBlitzPage({ id: 1, name: 'RiftScout Miss Fortune' }));
   assert.ok(!lcu.isBlitzPage({ id: 1, name: 'My MF page' }));
   assert.ok(!lcu.isBlitzPage(null));
+  // Die speler se eie bladsy vir Blitzcrank is nie Blitz-app s'n nie
+  assert.ok(!lcu.isBlitzPage({ id: 1, name: 'Blitzcrank AP' }));
+  assert.ok(lcu.isBlitzPage({ id: 1, name: 'Blitz.gg Senna' }));
 });
