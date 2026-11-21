@@ -279,6 +279,13 @@ class BuildDB {
     return { stats: acc, patches };
   }
 
+  // Samegevoegde syfers van verskeie champions in een rol (bv. alle mages in mid) – vir items as 'n champion nog min games het
+  statsForMany(championIds, role, nPatches = 2) {
+    const acc = emptyRole();
+    for (const id of championIds) mergeRole(acc, this.statsFor(id, role, nPatches).stats);
+    return acc;
+  }
+
   // Alle champions in 'n rol met hul algehele wen- en lane-syfers (vir 'n "beste keuses"-lys)
   roleTable(role, nPatches = 2) {
     const patches = this.recentPatches(nPatches);
@@ -480,9 +487,10 @@ function guessRoles(roleGames) { // roleGames: [{ championId, roles: { TOP: n, .
 function buildPath(rec) {
   const core = rec.core[0] ? rec.core[0].ids : rec.items.slice(0, 3).map((e) => e.id);
   const order = [];
-  if (core[0]) order.push(core[0]);
-  if (rec.boots[0]) order.push(rec.boots[0].id);
-  order.push(...core.slice(1));
+  const add = (id) => { if (id && !order.includes(id)) order.push(id); };
+  add(core[0]);
+  if (rec.boots[0]) add(rec.boots[0].id);
+  core.slice(1).forEach(add);
   for (const k of ['item4', 'item5', 'item6']) {
     const pick = (rec[k] || []).find((e) => !order.includes(e.id));
     if (pick) order.push(pick.id);

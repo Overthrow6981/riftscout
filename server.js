@@ -519,6 +519,37 @@ function itemBlocks(rec) {
   return blocks;
 }
 
+// Items vir 'n champion: sy eie games as daar 'n kern-build is, anders wat soortgelyke champions
+// (dieselfde klas, bv. mages) in dieselfde rol in high-elo koop. So kry jy altyd 'n item set in die winkel.
+const ITEM_MIN_GAMES = 5;
+const CLASS_MIN_GAMES = 15;
+const CLASS_NAMES = { Mage: 'mage', Fighter: 'fighter', Tank: 'tank', Marksman: 'marksman', Assassin: 'assassin', Support: 'support' };
+function itemsFor(championId, role, vs) {
+  const b = buildFor(championId, role, false, vs);
+  if (b.rec && b.rec.games >= ITEM_MIN_GAMES && b.rec.core.length) {
+    return { rec: b.rec, role: b.role, kind: 'champion', games: b.rec.games };
+  }
+  const useRole = role || b.role || (riotPositions.map[championId] || [])[0] || '';
+  const tags = DD && DD.champions[championId] ? (DD.champions[championId].tags || []) : [];
+  if (!useRole || !tags.length) return null;
+  // Eers champions met dieselfde hoofklas (bv. Fighter), dan die tweede klas (bv. Tank) as daar te min games is
+  for (const tag of tags.slice(0, 2)) {
+    const ids = Object.entries(DD.champions).filter(([id, c]) => Number(id) !== championId && (c.tags || [])[0] === tag).map(([id]) => Number(id));
+    const stats = db.statsForMany(ids, useRole);
+    if (stats.games < CLASS_MIN_GAMES) continue;
+    const rec = builds.recommend(stats, null);
+    if (!rec.core.length) continue;
+    if (DD.champions[championId].id === 'Cassiopeia') rec.boots = []; // Cassiopeia kan nie boots koop nie
+    return { rec, role: useRole, kind: 'class', tag, className: CLASS_NAMES[tag] || tag.toLowerCase(), games: stats.games };
+  }
+  return null;
+}
+function itemSetTitle(champName, it, vsName) {
+  const role = ROLE_NAMES[it.role] || '';
+  if (it.kind === 'class') return `RiftScout ${champName} ${role} (${it.className} items)`.replace(/\s+/g, ' ');
+  return `RiftScout ${champName} ${role}${vsName ? ` vs ${vsName}` : ''}`.replace(/\s+/g, ' ').trim();
+}
+
 // Hou spells in die slot waar die speler dit nou het (bv. Flash op D of F); anders Flash op F
 function orderSpells(ids, cs) {
   let [a, b] = ids;
@@ -539,6 +570,14 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
     if (!page) return { ok: false, retry: true, championId, error: `No runes for ${champ.name} yet – is the League client open?` };
     const results = {};
     if (what.has('runes')) results.runes = await lcu.importRunes(page, `RiftScout ${champ.name}`, getPrefs().replacePages);
+    if (what.has('items')) {
+      // Nog min eie games vir hierdie champion: die items wat sy soort champions in hierdie rol koop
+      const it = itemsFor(championId, pos, vs);
+      results.items = it
+        ? await lcu.importItemSet(championId, itemSetTitle(champ.name, it), itemBlocks(it.rec))
+        : { ok: false, error: 'no item data for this champion yet' };
+      if (it) results.items.kind = it.kind;
+    }
     if (what.has('spells') && page.spells.length === 2) results.spells = await lcu.setSpells(...orderSpells(page.spells, cs));
     return {
       ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: pos,
@@ -894,7 +933,8 @@ async function overlayData() {
   const b = championId ? buildFor(championId, role, false, vsId || null) : null;
   const rec = b && b.rec && b.rec.games >= MIN_GAMES ? b.rec : null;
   const owned = me ? (me.items || []).map((it) => it.itemID) : [];
-  const pathIds = rec ? builds.buildPath(rec) : [];
+  const itemRec = rec || (championId ? (itemsFor(championId, role, vsId || null) || {}).rec : null);
+  const pathIds = itemRec ? builds.buildPath(itemRec) : [];
   const next = pathIds.find((id) => !owned.includes(id)) || null;
   const s = (me && me.scores) || {};
   const minutes = (d.gameData && d.gameData.gameTime ? d.gameData.gameTime : 0) / 60;
@@ -1127,6 +1167,12 @@ app.get('/api/builds/champion/:id', wrap(async (req, res) => {
   if (!b.rec || b.rec.games < MIN_GAMES) {
     if (!b.role) b.role = (riotPositions.map[id] || [])[0] || '';
     b.riot = lcuState.connected ? await lcu.recommendedPage(id, b.role).catch(() => null) : null;
+    const it = itemsFor(id, b.role, vs);
+    if (it) {
+      const r = it.rec;
+      b.items = { kind: it.kind, className: it.className || '', role: it.role, games: it.games,
+        start: r.start.slice(0, 1), boots: r.boots.slice(0, 2), core: r.core.slice(0, 2), item4: r.item4, item5: r.item5, item6: r.item6 };
+    }
   }
   b.riotRoles = riotPositions.map[id] || [];
   res.json(b);
