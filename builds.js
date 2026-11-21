@@ -39,10 +39,29 @@ function itemsFromDDragon(itemJson) {
       tags: it.tags || [],
       into: it.into || [],
       requiredAlly: it.requiredAlly || '',
+      sr: !it.maps || it.maps['11'] !== false, // bestaan op Summoner's Rift
     };
   }
   return items;
 }
+
+// ---------- Ná 'n League-patch ----------
+// Die build-data hou die laaste paar patches. As Riot 'n item of rune uithaal (of van Summoner's Rift af haal),
+// mag RiftScout dit nie meer aanbeveel nie. server.js gee die stel geldige ID's uit die nuutste Data Dragon.
+let valid = null; // { items: Set<string>, runes: Set<string>, spells: Set<string> } of null (nog nie gelaai nie)
+function setValidity(v) { valid = v || null; }
+const allIn = (set, ids) => !valid || !set || !set.size || ids.every((id) => set.has(String(id)));
+const okItems = (ids) => allIn(valid && valid.items, ids);
+const okSpells = (ids) => allIn(valid && valid.spells, ids);
+const okRunePage = (pg) => allIn(valid && valid.runes, [pg.primaryStyleId, pg.subStyleId, ...pg.primary, ...pg.secondary]);
+const KEEP = {
+  runes: (k) => { try { return okRunePage(parseRuneKey(k)); } catch { return false; } },
+  spells: (k) => okSpells(k.split(',')),
+  start: (k) => okItems(k.split(',')),
+  core: (k) => okItems(k.split('-')),
+  item: (k) => okItems([k]),
+};
+const keepOnly = (map, keep) => (!valid || !map ? map : Object.fromEntries(Object.entries(map).filter(([k]) => keep(k))));
 
 function itemClassifier(items) {
   const get = (id) => items[String(id)];
@@ -375,9 +394,20 @@ function top(map, k = 3) {
 const nums = (key, sep = ',') => key.split(sep).map(Number);
 
 // Opsies vir die 4de–6de item (die eerste 8; ná die kern-build word dit tot 3 gesny)
-const lateOptions = (map) => top(map, 8).map((e) => ({ ...e, id: Number(e.key) }));
+const lateOptions = (map) => top(keepOnly(map, KEEP.item), 8).map((e) => ({ ...e, id: Number(e.key) }));
 
-function recommend(s, vsId) {
+function recommend(stats, vsId) {
+  // Net items, runes en spells wat in die huidige patch bestaan
+  const clean = (x) => (!valid || !x ? x : {
+    ...x,
+    runes: keepOnly(x.runes, KEEP.runes),
+    spells: keepOnly(x.spells, KEEP.spells),
+    start: keepOnly(x.start, KEEP.start),
+    boots: keepOnly(x.boots, KEEP.item),
+    core: keepOnly(x.core, KEEP.core),
+    items: keepOnly(x.items, KEEP.item),
+  });
+  const s = clean(stats);
   const rec = {
     games: s.games,
     wins: s.wins,
@@ -397,7 +427,7 @@ function recommend(s, vsId) {
     fromMatchup: [],
   };
   // Matchup-build: gebruik die keuses teen hierdie spesifieke teenstander waar daar genoeg data is
-  const m = vsId && s.vs ? s.vs[vsId] : null;
+  const m = vsId && s.vs ? clean(s.vs[vsId]) : null;
   if (m) {
     rec.vs = { championId: Number(vsId), games: m.games, wins: m.wins, lane: m.lane || null };
     if (m.games >= MATCHUP_MIN) {
@@ -672,5 +702,5 @@ module.exports = {
   ROLES, PLATFORM_ROUTE, itemsFromDDragon, itemClassifier, analyzeMatch, patchOf, comparePatch,
   runeKey, parseRuneKey, maxOrder, BuildDB, SeenSet, Crawler, recommend, buildPath,
   matchups, counterPicks, bestInRole, guessRoles, MATCHUP_MIN, KEEP_PATCHES,
-  itemProfile, profileSimilarity, metaSimilarity, weightedMerge,
+  itemProfile, profileSimilarity, metaSimilarity, weightedMerge, setValidity,
 };

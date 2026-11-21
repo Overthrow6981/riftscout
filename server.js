@@ -358,6 +358,14 @@ async function getDDragon() {
     const items = {};
     for (const [id, it] of Object.entries(full)) items[id] = { name: it.name, gold: it.gold };
     itemCls = builds.itemClassifier(full);
+    // Ná 'n patch: items en runes wat Riot uitgehaal het, word nie meer aanbeveel nie (ou build-data)
+    // (net as Data Dragon volledig lyk: 'n halwe of vreemde antwoord mag nie alle builds laat verdwyn nie)
+    const ifFull = (set, min) => (set.size >= min ? set : null);
+    builds.setValidity({
+      items: ifFull(new Set(Object.entries(full).filter(([, it]) => it.sr).map(([id]) => id)), 150),
+      runes: ifFull(new Set(Object.keys(runes)), 40),
+      spells: ifFull(new Set(Object.keys(spells)), 8),
+    });
     DD = { version: v, spells, runes, trees, champions, items };
     return DD;
   });
@@ -531,7 +539,9 @@ function itemBlocks(rec, plain = false) {
     if (rec[k].length) blocks.push(blk(`${i + 4}th item options`, rec[k].map((e) => e.id)));
   });
   if (rec.items.length) blocks.push(blk('Popular items', rec.items.slice(0, 8).map((e) => e.id)));
-  blocks.push(blk('Consumables', [2003, 2055]));
+  const known = (id) => !DD || !DD.items || !!DD.items[id];
+  const consumables = [2003, 2055].filter(known); // Health Potion, Control Ward
+  if (consumables.length) blocks.push(blk('Consumables', consumables));
   return blocks;
 }
 
