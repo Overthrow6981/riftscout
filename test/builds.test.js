@@ -154,3 +154,31 @@ test('4de–6de item-opsies wys nie items wat reeds in die kern-build is nie', (
   assert.deepEqual(rec.core[0].ids, [3089, 3157, 3135]);
   assert.deepEqual(rec.item4.map((e) => e.id), [3100], 'Void Staff (3135) is reeds in die kern');
 });
+
+test('ná \'n patch: items en runes wat Riot uitgehaal het, word nie meer aanbeveel nie', () => {
+  const db = new b.BuildDB(path.join(os.tmpdir(), 'rs-patch-never-saved.json'));
+  const row = (completed, runes) => ({ championId: 1, role: 'MIDDLE', vs: 0, win: true, laneWin: null, runes,
+    spells: '4,14', start: '1056,2003', completed, boots: 3020, maxOrder: 'Q>W>E', skills: 'QWEQQRQWQWRWWEE' });
+  const oldRunes = '8100:8112,8139,8138,8135|8200:8226,8210|5008,5008,5001';
+  const newRunes = '8100:8128,8139,8138,8135|8200:8226,8210|5008,5008,5001';
+  // Die meeste games is ouer, met item 9999 en rune 8112 wat in die nuwe patch weg is
+  for (let i = 0; i < 6; i++) db.addMatch('16.22', [row([9999, 3157, 3135, 3100], oldRunes)]);
+  for (let i = 0; i < 3; i++) db.addMatch('16.23', [row([3089, 3157, 3135, 3100], newRunes)]);
+  const stats = db.statsFor(1, 'MIDDLE', 2).stats;
+  assert.deepEqual(b.recommend(stats, null).core[0].ids, [9999, 3157, 3135], 'sonder Data Dragon: net die data');
+  try {
+    b.setValidity({
+      items: new Set(['1056', '2003', '3020', '3089', '3157', '3135', '3100']),
+      runes: new Set(['8100', '8200', '8128', '8139', '8138', '8135', '8226', '8210']),
+      spells: new Set(['4', '14']),
+    });
+    const rec = b.recommend(stats, null);
+    assert.deepEqual(rec.core[0].ids, [3089, 3157, 3135], 'die kern-build met die uitgehaalde item val weg');
+    assert.ok(!rec.items.some((e) => e.id === 9999));
+    assert.deepEqual(rec.runes.map((r) => r.page.primary[0]), [8128], 'die rune page met die uitgehaalde rune val weg');
+    assert.deepEqual(rec.start[0].ids, [1056, 2003]);
+    assert.deepEqual(rec.spells[0].ids, [4, 14]);
+  } finally {
+    b.setValidity(null);
+  }
+});
