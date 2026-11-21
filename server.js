@@ -49,6 +49,7 @@ const DEFAULT_PREFS = {
   autoSpells: true,         // sit ook summoner spells outomaties (net op Summoner's Rift)
   replacePages: true,       // as al die rune pages vol is: vervang die huidige een (soos Blitz)
   openOnChampSelect: true,  // bring RiftScout na vore sodra champ select begin
+  replaceBlitzSets: true,   // haal die Blitz-app se item sets vir jou champion uit (RiftScout s'n wys dan in die winkel)
 };
 function getPrefs() {
   // Net bekende voorkeure (ou instellings, bv. van die verwyderde in-game oorleg, word geïgnoreer)
@@ -634,7 +635,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
       // Nog min eie games vir hierdie champion: die items wat sy soort champions in hierdie rol koop
       const it = itemsFor(championId, pos, vs);
       results.items = it
-        ? await lcu.importItemSet(championId, itemSetTitle(champ.name, it), itemBlocks(it.rec, it.kind === 'mixed' || it.kind === 'similar'))
+        ? await importItems(championId, champ.name, itemSetTitle(champ.name, it), itemBlocks(it.rec, it.kind === 'mixed' || it.kind === 'similar'))
         : { ok: false, error: 'no item data for this champion yet' };
       if (it) results.items.kind = it.kind;
     }
@@ -650,7 +651,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
   if (what.has('runes') && runePage) results.runes = await lcu.importRunes(runePage.page, `RiftScout ${champ.name}`, replace);
   const vsName = rec.vs && DD && DD.champions[rec.vs.championId] ? DD.champions[rec.vs.championId].name : '';
   const setTitle = `RiftScout ${champ.name} ${ROLE_NAMES[b.role] || ''}${vsName && rec.fromMatchup.length ? ` vs ${vsName}` : ''}`.trim();
-  if (what.has('items')) results.items = await lcu.importItemSet(championId, setTitle, itemBlocks(rec));
+  if (what.has('items')) results.items = await importItems(championId, champ.name, setTitle, itemBlocks(rec));
   if (what.has('spells') && rec.spells[0]) results.spells = await lcu.setSpells(...orderSpells(rec.spells[0].ids, cs));
   return {
     ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: b.role,
@@ -669,6 +670,30 @@ let hoverSince = { key: '', at: 0 };
 let prevPhase = null;
 const champSelectListeners = [];
 function onChampSelectStart(fn) { champSelectListeners.push(fn); }
+// Item set in League sit, en onthou dit sodat ons kan kyk of 'n ander app (bv. Blitz) dit daarna oorskryf
+let itemGuard = null;
+const GUARD_EVERY_MS = 4000;
+const GUARD_MAX_FIXES = 5;
+async function importItems(championId, champName, title, blocks) {
+  const opts = { removeBlitz: getPrefs().replaceBlitzSets, champName };
+  const r = await lcu.importItemSet(championId, title, blocks, opts);
+  if (r.ok) itemGuard = { championId, champName, title, blocks, opts, fixes: 0, nextCheck: Date.now() + GUARD_EVERY_MS };
+  return r;
+}
+// Blitz (as dit nog loop) sit sy item sets ook in wanneer jy kies, soms ná RiftScout. Dan herstel ons ons s'n.
+async function guardItemSet() {
+  const g = itemGuard;
+  if (!g || Date.now() < g.nextCheck) return;
+  g.nextCheck = Date.now() + GUARD_EVERY_MS;
+  if (g.fixes >= GUARD_MAX_FIXES) return;
+  const st = await lcu.itemSetStatus(g.championId, g.champName).catch(() => null);
+  if (!st) return;
+  const bad = !st.ours || !st.first || (g.opts.removeBlitz && st.blitz > 0);
+  if (!bad) return;
+  g.fixes++;
+  await lcu.importItemSet(g.championId, g.title, g.blocks, g.opts).catch(() => null);
+}
+
 let lcuBusy = false;
 async function lcuTick() {
   if (lcuBusy) return;
@@ -686,6 +711,7 @@ async function lcuTick() {
     lcuState = st;
     if (st.phase === 'ChampSelect' && prevPhase !== 'ChampSelect') {
       lastImport = null; // nuwe champ select: ou invoer-boodskap weg
+      itemGuard = null;
       for (const fn of champSelectListeners) { try { fn(); } catch { /* nie ons probleem nie */ } }
     }
     prevPhase = st.phase;
@@ -693,7 +719,13 @@ async function lcuTick() {
     if (!!st.connected !== !!me.connected) me.at = 0;
     if (st.connected || me.at === 0) whoAmI().catch(() => {});
     if ((API_KEY || st.connected) && ['ChampSelect', 'GameStart', 'InProgress'].includes(st.phase)) getLobby().catch(() => {});
+    // Laaste kontrole net voor die game laai (Blitz skryf soms op daardie oomblik), dan klaar
+    if (itemGuard && lcuState.phase !== 'ChampSelect') {
+      if (['GameStart', 'InProgress'].includes(lcuState.phase)) { itemGuard.nextCheck = 0; await guardItemSet(); }
+      itemGuard = null;
+    }
     if (lcuState.phase !== 'ChampSelect') { lastAutoKey = ''; lastSpellKey = ''; vsOverride = null; manualRunesFor = 0; return; }
+    await guardItemSet();
     const cs = lcuState.champSelect;
     const prefs = getPrefs();
     if (!cs || !cs.championId || !prefs.autoImport) return;
@@ -999,7 +1031,7 @@ app.post('/api/prefs', wrap(async (req, res) => {
   const b = req.body || {};
   const cfg = loadConfig();
   const p = { ...(cfg.prefs || {}) };
-  for (const k of ['collectBuilds', 'autoImport', 'autoSpells', 'replacePages', 'openOnChampSelect']) if (typeof b[k] === 'boolean') p[k] = b[k];
+  for (const k of ['collectBuilds', 'autoImport', 'autoSpells', 'replacePages', 'openOnChampSelect', 'replaceBlitzSets']) if (typeof b[k] === 'boolean') p[k] = b[k];
   if (typeof b.crawlRegion === 'string' && (b.crawlRegion === '' || PLATFORMS[b.crawlRegion])) p.crawlRegion = b.crawlRegion;
   cfg.prefs = p;
   saveConfig(cfg);

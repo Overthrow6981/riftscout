@@ -169,14 +169,47 @@ async function importRunes(rune, name, replaceCurrent) {
   };
 }
 
-async function importItemSet(championId, title, blocks) {
+// Item sets van RiftScout en van die Blitz-app vir een champion
+const forChamp = (s, championId) => (s.associatedChampions || []).includes(championId);
+const isRiftScoutSet = (s, championId) => String(s.title || '').startsWith('RiftScout') && forChamp(s, championId);
+// Blitz noem sy sets "Blitz: Crit Miss Fortune" ens. (nie "Blitzcrank ..." nie)
+const isBlitzSet = (s, championId, champName) => /^blitz\b/i.test(String(s.title || '').trim())
+  && (forChamp(s, championId) || (!(s.associatedChampions || []).length && !!champName && String(s.title).includes(champName)));
+
+async function readItemSets() {
   const me = await request('GET', '/lol-summoner/v1/current-summoner');
-  if (me.status !== 200 || !me.data || !me.data.summonerId) return { ok: false, error: 'Not logged in to the League client.' };
+  if (me.status !== 200 || !me.data || !me.data.summonerId) return { error: 'Not logged in to the League client.' };
   const url = `/lol-item-sets/v1/item-sets/${me.data.summonerId}/sets`;
   const cur = await request('GET', url);
-  if (cur.status !== 200 || !cur.data) return { ok: false, error: 'Could not read item sets.' };
-  const itemSets = (cur.data.itemSets || []).filter(
-    (s) => !(String(s.title || '').startsWith('RiftScout') && (s.associatedChampions || []).includes(championId)));
+  if (cur.status !== 200 || !cur.data) return { error: 'Could not read item sets.' };
+  return { url, data: cur.data };
+}
+
+// Is RiftScout se set nog daar en boaan vir hierdie champion, en is daar Blitz-sets?
+async function itemSetStatus(championId, champName) {
+  const r = await readItemSets();
+  if (r.error) return null;
+  const sets = r.data.itemSets || [];
+  const mine = sets.filter((s) => forChamp(s, championId));
+  return {
+    ours: sets.some((s) => isRiftScoutSet(s, championId)),
+    first: !!mine[0] && isRiftScoutSet(mine[0], championId),
+    blitz: sets.filter((s) => isBlitzSet(s, championId, champName)).length,
+  };
+}
+
+// removeBlitz: haal die Blitz-app se sets vir hierdie champion uit, sodat RiftScout s'n die een in die winkel is
+async function importItemSet(championId, title, blocks, { removeBlitz = false, champName = '' } = {}) {
+  const r = await readItemSets();
+  if (r.error) return { ok: false, error: r.error };
+  const { url } = r;
+  const cur = { data: r.data };
+  let removed = 0;
+  const itemSets = (cur.data.itemSets || []).filter((s) => {
+    if (isRiftScoutSet(s, championId)) return false;
+    if (removeBlitz && isBlitzSet(s, championId, champName)) { removed++; return false; }
+    return true;
+  });
   itemSets.unshift({
     title: title.slice(0, 75),
     associatedChampions: [championId],
@@ -191,7 +224,7 @@ async function importItemSet(championId, title, blocks) {
     uid: crypto.randomUUID(),
   });
   const put = await request('PUT', url, { ...cur.data, itemSets });
-  return ok(put) ? { ok: true } : { ok: false, error: `Item set import failed (${put.status}).` };
+  return ok(put) ? { ok: true, removedBlitz: removed } : { ok: false, error: `Item set import failed (${put.status}).` };
 }
 
 async function setSpells(spell1Id, spell2Id) {
@@ -360,7 +393,7 @@ async function gameSession() {
 }
 
 module.exports = {
-  state, importRunes, importItemSet, setSpells, identity,
+  state, importRunes, importItemSet, itemSetStatus, isBlitzSet, setSpells, identity,
   lookupRiotId, summonerByPuuid, ranked, masteries, matchList, game, gameSession, okPuuid,
   recommendedPositions, recommendedPage,
 };
