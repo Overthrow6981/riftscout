@@ -444,6 +444,8 @@ function recommend(stats, vsId) {
     }
   }
   // Items wat reeds in die kern-build is, koop jy nie weer as 4de–6de item nie
+  // (die volle lyste bly in rec.late, vir die ander kern-builds se eie 4de–6de items)
+  rec.late = { item4: rec.item4, item5: rec.item5, item6: rec.item6 };
   const inCore = new Set(rec.core[0] ? rec.core[0].ids : []);
   for (const k of ['item4', 'item5', 'item6']) rec[k] = rec[k].filter((e) => !inCore.has(e.id)).slice(0, 3);
   return rec;

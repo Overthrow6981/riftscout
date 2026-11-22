@@ -322,6 +322,78 @@ function getLiveData() {
   });
 }
 
+// ---------- Goud per lane (soos Blitz): wie is voor, jy of jou teenstander? ----------
+// Riot se Live Client API gee nie die ander spelers se goud nie; net hul items. Soos Blitz tel ons dus die
+// waarde van elke speler se items (Data Dragon se prys, anders die API s'n). Onbestede goud tel nie.
+let lastAllyRoles = new Map(); // championId -> rol, uit die laaste champ select
+const LIVE_POSITIONS = { TOP: 'TOP', JUNGLE: 'JUNGLE', MIDDLE: 'MIDDLE', MID: 'MIDDLE', BOTTOM: 'BOTTOM', BOT: 'BOTTOM', UTILITY: 'UTILITY', SUPPORT: 'UTILITY' };
+function liveChampionId(p) {
+  if (!DD) return 0;
+  const raw = String(p.rawChampionName || '');
+  const key = raw.startsWith('game_character_displayname_') ? raw.slice('game_character_displayname_'.length) : '';
+  for (const [id, c] of Object.entries(DD.champions)) {
+    if ((key && c.id === key) || (!key && c.name === p.championName)) return Number(id);
+  }
+  return 0;
+}
+function itemGold(items) {
+  let g = 0;
+  for (const it of items || []) {
+    const dd = DD && DD.items && DD.items[it.itemID];
+    const price = dd && dd.gold ? dd.gold : Number(it.price) || 0;
+    g += price * Math.max(1, Number(it.count) || 1);
+  }
+  return g;
+}
+const hasSmite = (p) => ['summonerSpellOne', 'summonerSpellTwo'].some((k) => /smite/i.test(String((p.summonerSpells && p.summonerSpells[k] && (p.summonerSpells[k].rawDisplayName || p.summonerSpells[k].displayName)) || '')));
+// Rolle vir een span: die spel se eie posisie, anders (jou span) champ select, anders 'n raaiskoot (Smite = jungle)
+function teamRoles(players, own) {
+  const fixed = {};
+  for (const p of players) {
+    const pos = LIVE_POSITIONS[String(p.position || '').toUpperCase()];
+    if (pos) fixed[p.championId] = pos;
+    else if (own && lastAllyRoles.has(p.championId)) fixed[p.championId] = lastAllyRoles.get(p.championId);
+  }
+  const guess = builds.guessRoles(players.filter((p) => p.championId).map((p) => {
+    if (fixed[p.championId]) return { championId: p.championId, roles: { [fixed[p.championId]]: 1 } };
+    if (hasSmite(p)) return { championId: p.championId, roles: { JUNGLE: 1 } };
+    const prior = rolePrior(p.championId);
+    return { championId: p.championId, roles: Object.keys(prior).length ? prior : { TOP: 1, JUNGLE: 1, MIDDLE: 1, BOTTOM: 1, UTILITY: 1 } };
+  }));
+  return { roles: guess, sure: (id) => !!fixed[id] };
+}
+function liveLanes(data) {
+  const all = (data && data.allPlayers) || [];
+  if (!all.length || !DD) return null;
+  const a = data.activePlayer || {};
+  const meName = a.riotId || a.summonerName || '';
+  const meP = all.find((p) => (p.riotId && p.riotId === meName) || (p.summonerName && p.summonerName === meName)
+    || (a.riotIdGameName && p.riotIdGameName === a.riotIdGameName)) || null;
+  const myTeam = meP ? meP.team : 'ORDER';
+  const players = all.map((p) => {
+    const s = p.scores || {};
+    return {
+      championId: liveChampionId(p), champion: p.championName || '', name: p.riotIdGameName || p.summonerName || '',
+      team: p.team, level: p.level || 0, gold: itemGold(p.items), cs: s.creepScore || 0,
+      kills: s.kills || 0, deaths: s.deaths || 0, assists: s.assists || 0, me: p === meP,
+      position: p.position, summonerSpells: p.summonerSpells,
+    };
+  });
+  const ally = players.filter((p) => p.team === myTeam);
+  const enemy = players.filter((p) => p.team !== myTeam);
+  const ar = teamRoles(ally, true);
+  const er = teamRoles(enemy, false);
+  const strip = (p) => p && { championId: p.championId, champion: p.champion, name: p.name, level: p.level, gold: p.gold, cs: p.cs, kills: p.kills, deaths: p.deaths, assists: p.assists, me: p.me };
+  const lanes = builds.ROLES.map((role) => {
+    const x = ally.find((p) => ar.roles[p.championId] === role);
+    const y = enemy.find((p) => er.roles[p.championId] === role);
+    if (!x && !y) return null;
+    return { role, ally: strip(x), enemy: strip(y), diff: x && y ? x.gold - y.gold : null, guessed: !!y && !er.sure(y.championId) };
+  }).filter(Boolean);
+  const sum = (ps) => ps.reduce((t, p) => t + p.gold, 0);
+  return { lanes, allyGold: sum(ally), enemyGold: sum(enemy), myRole: meP ? ar.roles[liveChampionId(meP)] || null : null };
+}
+
 // ---------- Data Dragon (statiese data: weergawe, spells, runes, champions, items) ----------
 let DD = null;        // laaste suksesvolle Data Dragon data
 let itemCls = null;   // item-klassifiseerder vir build-data
@@ -525,7 +597,8 @@ const pctText = (e) => (e && e.n ? `${Math.round((e.w / e.n) * 100)}% win` : '')
 
 function itemBlocks(rec, plain = false) {
   // plain: saamgevoegde data van soortgelyke champions – daar wys ons nie wenkoerse in die titels nie
-  const pct = (e) => (plain ? '' : ` · ${pctText(e)}`);
+  // (net gewone ASCII-tekens in die titels: die spel se winkel wys nie elke teken nie)
+  const pct = (e) => (plain || !e || !e.n ? '' : ` (${pctText(e)})`);
   const blk = (type, ids) => {
     const counts = new Map();
     for (const id of ids) counts.set(id, (counts.get(id) || 0) + 1);
@@ -543,6 +616,35 @@ function itemBlocks(rec, plain = false) {
   const consumables = [2003, 2055].filter(known); // Health Potion, Control Ward
   if (consumables.length) blocks.push(blk('Consumables', consumables));
   return blocks;
+}
+
+// Soos Blitz: 'n paar build-keuses in die winkel. Die hoof-set, plus elke ander kern-build wat genoeg gespeel word
+// en ander items het, met sy eie 4de–6de items. Die naam sê watter item die build anders maak.
+const ALT_MIN_GAMES = 4;
+const ALT_MIN_SHARE = 0.15;
+function itemSets(title, champName, rec, plain = false) {
+  const main = { title, blocks: itemBlocks(rec, plain) };
+  if (!rec || !rec.core || !rec.core[0]) return [main];
+  const first = rec.core[0];
+  const seen = [new Set(first.ids)];
+  const named = new Set();
+  const extra = [];
+  for (const c of rec.core.slice(1)) {
+    if (extra.length >= 2) break;
+    if (!c || c.n < Math.max(ALT_MIN_GAMES, Math.ceil(first.n * ALT_MIN_SHARE))) continue;
+    const ids = new Set(c.ids);
+    if (seen.some((x) => x.size === ids.size && [...x].every((id) => ids.has(id)))) continue; // net 'n ander volgorde
+    seen.push(ids);
+    // Die eerste item wat anders is as die hoof-build (en nog nie 'n ander keuse se naam is nie)
+    const key = c.ids.find((id) => !seen[0].has(id) && !named.has(id)) || c.ids.find((id) => !seen[0].has(id)) || c.ids[0];
+    named.add(key);
+    const name = (DD && DD.items && DD.items[key] && DD.items[key].name) || `item ${key}`;
+    const late = rec.late || rec;
+    const alt = { ...rec, core: [c] };
+    for (const k of ['item4', 'item5', 'item6']) alt[k] = (late[k] || []).filter((e) => !ids.has(e.id)).slice(0, 3);
+    extra.push({ title: `RiftScout ${champName}: ${name} build`.replace(/\s+/g, ' '), blocks: itemBlocks(alt, plain) });
+  }
+  return [main, ...extra];
 }
 
 // Items vir 'n champion met te min eie games in die rol vir 'n volle build. Items hang meer van die champion
@@ -658,7 +760,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
       // Nog min eie games vir hierdie champion: die items wat sy soort champions in hierdie rol koop
       const it = itemsFor(championId, pos, vs);
       results.items = it
-        ? await importItems(championId, champ.name, itemSetTitle(champ.name, it), itemBlocks(it.rec, it.kind === 'mixed' || it.kind === 'similar'))
+        ? await importItems(championId, champ.name, ...splitSets(itemSets(itemSetTitle(champ.name, it), champ.name, it.rec, it.kind === 'mixed' || it.kind === 'similar')))
         : { ok: false, error: 'no item data for this champion yet' };
       if (it) results.items.kind = it.kind;
     }
@@ -675,7 +777,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
   if (what.has('runes') && runePage) results.runes = await importRunes(runePage.page, `RiftScout ${champ.name}`, replace);
   const vsName = rec.vs && DD && DD.champions[rec.vs.championId] ? DD.champions[rec.vs.championId].name : '';
   const setTitle = `RiftScout ${champ.name} ${ROLE_NAMES[b.role] || ''}${vsName && rec.fromMatchup.length ? ` vs ${vsName}` : ''}`.trim();
-  if (what.has('items')) results.items = await importItems(championId, champ.name, setTitle, itemBlocks(rec));
+  if (what.has('items')) results.items = await importItems(championId, champ.name, ...splitSets(itemSets(setTitle, champ.name, rec)));
   if (what.has('spells') && rec.spells[0]) results.spells = await lcu.setSpells(...orderSpells(rec.spells[0].ids, cs));
   return {
     ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: b.role,
@@ -712,7 +814,7 @@ const resultText = (r) => (!r ? '' : r.ok ? 'ok' : `failed (${r.error || 'unknow
 function importNote(kind, v) {
   if (!v || !v.ok) return '';
   const bits = [];
-  if (kind === 'items') bits.push(v.method === 'shop' ? 'shop file' : 'account item set');
+  if (kind === 'items') bits.push(v.method === 'shop' ? `shop file${v.sets > 1 ? `, ${v.sets} builds` : ''}` : 'account item set');
   if (v.note) bits.push(v.note);
   if (v.removedBlitz) bits.push(`removed ${v.removedBlitz} Blitz set${v.removedBlitz === 1 ? '' : 's'}`);
   if (v.replaced) bits.push(`replaced page "${v.replaced}"`);
@@ -763,7 +865,7 @@ async function writeItems(championId, champName, title, blocks, opts) {
   // Buite champ select (knoppie in die app): in die rekening se item sets, want die winkel-lêer word opgeruim
   if (!SHOP_BUSY_PHASES.includes(lcuState.phase)) return lcu.importItemSet(championId, title, blocks, opts);
   const champKey = (DD && DD.champions[championId] && DD.champions[championId].id) || '';
-  const r = await lcu.writeShopItemSet({ championKey: champKey, title, blocks, removeBlitz: opts.removeBlitz }).catch((e) => ({ ok: false, error: e.message }));
+  const r = await lcu.writeShopItemSet({ championKey: champKey, championId, title, blocks, extra: opts.extra, removeBlitz: opts.removeBlitz }).catch((e) => ({ ok: false, error: e.message }));
   if (r.ok) {
     shopFileActive = true;
     // Ou RiftScout-sets in die rekening (een per champion van vorige weergawes) sou langs hierdie een wys
@@ -774,8 +876,11 @@ async function writeItems(championId, champName, title, blocks, opts) {
   const fb = await lcu.importItemSet(championId, title, blocks, opts);
   return fb.ok ? { ...fb, note: `shop file failed: ${r.error}` } : { ...fb, error: `${fb.error} (shop file: ${r.error})` };
 }
-async function importItems(championId, champName, title, blocks) {
-  const opts = { removeBlitz: getPrefs().replaceBlitzSets, champName };
+// [hoof-set, ...ander keuses] -> (title, blocks, extra) vir importItems
+const splitSets = (sets) => [sets[0].title, sets[0].blocks, sets.slice(1)];
+async function importItems(championId, champName, title, blocks, extra = []) {
+  // extra: ander build-keuses; net in die winkel-lêers (die rekening se lys kry net die hoof-set)
+  const opts = { removeBlitz: getPrefs().replaceBlitzSets, champName, extra };
   const r = await writeItems(championId, champName, title, blocks, opts);
   if (r.ok) itemGuard = { championId, champName, title, blocks, opts, method: r.method, fixes: 0, nextCheck: Date.now() + GUARD_EVERY_MS };
   return r;
@@ -841,6 +946,10 @@ async function lcuTick() {
       cs.vsAuto = enemyLaner(cs.enemies || [], cs.role, cs.enemyRoles);
       cs.vsManual = !!vsOverride && (cs.enemies || []).includes(vsOverride);
       cs.vs = cs.vsManual ? vsOverride : cs.vsAuto;
+      // Jou span se rolle uit champ select onthou: in die game wys ons daarmee wie teen wie in elke lane is
+      const roles = new Map((cs.allies || []).filter((a) => a.championId > 0 && a.role).map((a) => [a.championId, a.role]));
+      if (cs.championId && cs.role) roles.set(cs.championId, cs.role);
+      if (roles.size) lastAllyRoles = roles;
     }
     lcuState = st;
     if (st.phase === 'ChampSelect' && prevPhase !== 'ChampSelect') {
@@ -1326,7 +1435,14 @@ app.get('/api/matches', wrap(async (req, res) => {
   res.json({ matches: results.filter(Boolean), hasMore: ids.length === count });
 }));
 
-app.get('/api/live', wrap(async (req, res) => res.json(await getLiveData())));
+app.get('/api/live', wrap(async (req, res) => {
+  const live = await getLiveData();
+  if (live.inGame) {
+    await getDDragon().catch(() => {});
+    try { live.lanes = liveLanes(live.data); } catch { live.lanes = null; } // die gewone live-blad werk steeds
+  }
+  res.json(live);
+}));
 app.get('/api/update', (req, res) => res.json(updateState));
 app.post('/api/update/install', wrap(async (req, res) => {
   requireJson(req);
@@ -1506,7 +1622,8 @@ async function isBusy() {
   return (await getLiveData()).inGame;
 }
 
-module.exports = { startServer, getLiveData, getPrefs, saveBuildData, cleanupOnQuit, setUpdateState, onInstallRequest, isBusy, onChampSelectStart };
+module.exports = { startServer, getLiveData, getPrefs, saveBuildData, cleanupOnQuit, setUpdateState, onInstallRequest, isBusy, onChampSelectStart,
+  _test: { itemSets, itemBlocks, liveLanes } };
 
 if (require.main === module) {
   startServer({ port: Number(process.env.PORT) || 3000 }).then((port) => {

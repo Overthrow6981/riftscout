@@ -264,6 +264,7 @@ function closeBlitz() {
 // Daarom skryf RiftScout sy set ook as so 'n lêer, met 'n hoër rang, en haal dit ná die game uit.
 const SHOP_FILE_PREFIX = '!!!riftscout-';
 const SHOP_RANK = 2100000000; // bo Blitz (1e9) en ander apps (2e9), binne die spel se 32-bis sortrank
+const MAX_SHOP_SETS = 3; // soos Blitz: 'n paar build-keuses in die winkel
 const MAX_SET_FILE = 512 * 1024;
 
 const forChamp = (s, championId) => (s.associatedChampions || []).includes(championId);
@@ -308,40 +309,53 @@ function listSetFiles(folder) {
 const fileRank = (s) => (s && s.priority === true ? 1e10 : 0) + (Number(s && s.sortrank) || 0);
 
 // Die set in die vorm wat Blitz (en ander apps) in Config\Global\Recommended skryf
-function shopSet(championKey, title, blocks) {
+// rank: die eerste set kry SHOP_RANK, elke volgende een een minder (so bly die volgorde in die winkel vas).
+// Met al die velde van die spel se "custom" item set (ook uid, associatedChampions/-Maps): sonder 'n uid het die
+// nuwe winkel die set skeef geteken (rye links afgesny, die naam in die keuselys bo-oor die lys).
+function shopSet(championKey, title, blocks, rank = SHOP_RANK, championId = 0) {
   return {
-    title: String(title).slice(0, 75),
+    uid: crypto.randomUUID(),
+    title: String(title).replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim().slice(0, 60),
+    associatedChampions: championId > 0 ? [Number(championId)] : [],
+    associatedMaps: [11],
     championKey: championKey || '',
     map: 'any',
     mode: 'any',
     type: 'custom',
     priority: true,
-    sortrank: SHOP_RANK,
+    sortrank: rank,
+    startedFrom: 'blank',
+    preferredItemSlots: [],
     blocks: blocks.map((b) => ({
       recMath: false, minSummonerLevel: -1, maxSummonerLevel: -1, showIfSummonerSpell: '', hideIfSummonerSpell: '',
-      type: String(b.type || 'Items').slice(0, 60),
+      // Net gewone ASCII-tekens (die spel se winkel-lettertipe wys nie elke teken nie), kort
+      type: String(b.type || 'Items').replace(/[^\x20-\x7e]/g, '').replace(/\s+/g, ' ').trim().slice(0, 40) || 'Items',
       items: (b.items || []).map((it) => ({ id: String(it.id), count: Number(it.count) || 1 })),
     })).filter((b) => b.items.length),
   };
 }
 
-// Lêerwerk (los getoets): skryf ons set, haal ons ou lêers uit, en as gevra die Blitz-app se oorblywende sets
-function writeShopFiles(folders, set, { removeBlitz = false, extraBlitzFolders = [] } = {}) {
+// Lêerwerk (los getoets): skryf ons set(s) (!!!riftscout-0.json, -1, -2 ...: een per build-keuse), haal ons ou
+// lêers uit, en as gevra die Blitz-app se oorblywende sets
+function writeShopFiles(folders, sets, { removeBlitz = false, extraBlitzFolders = [] } = {}) {
+  const list = (Array.isArray(sets) ? sets : [sets]).slice(0, MAX_SHOP_SETS);
   let removedBlitz = 0;
   const written = [];
   let error = null;
   for (const folder of folders) {
     try {
       fs.mkdirSync(folder, { recursive: true });
-      const file = path.join(folder, `${SHOP_FILE_PREFIX}0.json`);
+      const files = list.map((_, i) => path.join(folder, `${SHOP_FILE_PREFIX}${i}.json`));
       for (const f of listSetFiles(folder)) {
-        if (f.name.startsWith(SHOP_FILE_PREFIX)) { if (f.file !== file) fs.rmSync(f.file, { force: true }); continue; }
+        if (f.name.startsWith(SHOP_FILE_PREFIX)) { if (!files.includes(f.file)) fs.rmSync(f.file, { force: true }); continue; }
         if (removeBlitz && isBlitzFile(f.name, readSetFile(f.file))) { fs.rmSync(f.file, { force: true }); removedBlitz++; }
       }
-      const tmp = path.join(folder, `.riftscout-${process.pid}-${Date.now()}.tmp`); // nie .json nie: die spel lees dit nooit half
-      fs.writeFileSync(tmp, JSON.stringify(set));
-      fs.renameSync(tmp, file);
-      written.push(file);
+      list.forEach((set, i) => {
+        const tmp = path.join(folder, `.riftscout-${process.pid}-${Date.now()}-${i}.tmp`); // nie .json nie: die spel lees dit nooit half
+        fs.writeFileSync(tmp, JSON.stringify(set));
+        fs.renameSync(tmp, files[i]);
+      });
+      written.push(files[0]);
     } catch (e) { error = e; }
   }
   if (removeBlitz) {
@@ -386,17 +400,20 @@ let shopFoldersUsed = new Set();
 const champFolder = (dir, championKey) => (dir && championKey ? path.join(dir, 'Config', 'Champions', championKey, 'Recommended') : null);
 
 // Sit RiftScout se set in die winkel (Config\Global\Recommended). removeBlitz: haal Blitz se oorblywende sets uit.
-async function writeShopItemSet({ championKey, title, blocks, removeBlitz = false }) {
+// extra: ander build-keuses [{ title, blocks }], wat ná die hoof-set in die winkel wys
+async function writeShopItemSet({ championKey, championId = 0, title, blocks, extra: more = [], removeBlitz = false }) {
   const dir = await installDir();
   const folders = shopFolders(dir);
   if (!folders.length) {
     return { ok: false, error: dir ? `League's Config folder was not found in ${dir}.` : 'Could not find the League install folder.' };
   }
   const extra = removeBlitz && champFolder(dir, championKey) ? [champFolder(dir, championKey)] : [];
-  const r = writeShopFiles(folders, shopSet(championKey, title, blocks), { removeBlitz, extraBlitzFolders: extra });
+  const sets = [{ title, blocks }, ...(more || [])].filter((x) => x && x.blocks && x.blocks.length)
+    .slice(0, MAX_SHOP_SETS).map((x, i) => shopSet(championKey, x.title, x.blocks, SHOP_RANK - i, championId));
+  const r = writeShopFiles(folders, sets, { removeBlitz, extraBlitzFolders: extra });
   for (const f of folders) shopFoldersUsed.add(f);
   if (!r.written.length) return { ok: false, error: `Could not write the item set file (${(r.error && r.error.code) || 'error'}).` };
-  return { ok: true, method: 'shop', files: r.written, removedBlitz: r.removedBlitz };
+  return { ok: true, method: 'shop', files: r.written, sets: sets.length, removedBlitz: r.removedBlitz };
 }
 async function shopItemSetStatus() {
   const folders = shopFolders(await installDir());
@@ -705,5 +722,5 @@ module.exports = {
   lookupRiotId, summonerByPuuid, ranked, masteries, matchWindow, matchList, game, gameSession, okPuuid,
   recommendedPositions, recommendedPage,
   // vir die toetse
-  _files: { shopSet, writeShopFiles, removeShopFiles, shopFilesStatus, shopFolders, mergeAccountSets, SHOP_FILE_PREFIX, SHOP_RANK },
+  _files: { shopSet, writeShopFiles, removeShopFiles, shopFilesStatus, shopFolders, mergeAccountSets, SHOP_FILE_PREFIX, SHOP_RANK, MAX_SHOP_SETS },
 };
