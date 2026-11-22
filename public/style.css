@@ -474,3 +474,22 @@ ol.counters .few { color: var(--muted); opacity: .7; }
 .pick-chip:hover { border-color: var(--gold); }
 .pick-chip img { width: 26px; height: 26px; }
 small.ovr { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; color: var(--muted, #8b93a7); border: 1px solid var(--line, #2a2f3a); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
+
+/* Wie is voor per lane (Live Game) */
+.lanes .ln-row { display: grid; grid-template-columns: 70px 1fr 110px 1fr; align-items: center; gap: 8px; padding: 6px 4px; border-top: 1px solid var(--line, rgba(255,255,255,.08)); }
+.lanes .ln-row:first-of-type { border-top: 0; }
+.lanes .ln-row.mine { background: rgba(200, 170, 110, .08); border-radius: 8px; }
+.lanes .ln-row.total { font-weight: 600; }
+.lanes .ln-role { font-size: 13px; opacity: .85; }
+.lanes .ln-p { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lanes .ln-p.enemy { flex-direction: row-reverse; text-align: right; }
+.lanes .ln-p img.c { width: 34px; height: 34px; border-radius: 8px; }
+.lanes .ln-p .n { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lanes .ln-p .s { font-size: 12px; opacity: .8; }
+.lanes .ln-p.me .n { color: var(--gold); }
+.lanes .ln-diff { text-align: center; display: flex; flex-direction: column; }
+.lanes .ln-diff small { font-size: 11px; opacity: .7; }
+@media (max-width: 600px) {
+  .lanes .ln-row { grid-template-columns: 52px 1fr 70px 1fr; }
+  .lanes .ln-p .n { display: none; }
+}

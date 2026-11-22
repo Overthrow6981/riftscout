@@ -332,10 +332,35 @@ async function pollLive() {
       : 'Not in a game right now. Start a match (Practice Tool works too) and this page updates automatically.<br><br>Note: the live view only works when RiftScout runs on the same PC as League of Legends.'}</div>`;
     return;
   }
-  renderLive(state.data);
+  renderLive(state.data, state.lanes);
 }
 
-function renderLive(data) {
+// Wie is voor in elke lane (goud uit items, soos Blitz dit wys)
+function lanesCard(L) {
+  if (!L || !L.lanes || !L.lanes.length) return '';
+  const k = (n) => (Math.abs(n) >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)));
+  const side = (p, cls) => (p
+    ? `<div class="ln-p ${cls} ${p.me ? 'me' : ''}"><img class="c" src="${dd.champions[p.championId] ? champImg(dd.champions[p.championId].id) : ''}" alt="" title="${esc(p.champion)}">
+        <div><div class="n">${esc(p.champion)}${p.me ? ' <small>(you)</small>' : ''}</div><div class="s">${k(p.gold)} gold · ${p.cs} CS · ${p.kills}/${p.deaths}/${p.assists}</div></div></div>`
+    : `<div class="ln-p ${cls} empty"><small>–</small></div>`);
+  const rows = L.lanes.map((l) => {
+    const d = l.diff;
+    const lead = d == null ? '' : d === 0 ? '<b>even</b>' : `<b class="${d > 0 ? 'good' : 'bad'}">${d > 0 ? '+' : '−'}${k(Math.abs(d))}</b>`;
+    const who = d == null || d === 0 ? '' : `<small>${d > 0 ? 'your team ahead' : 'enemy ahead'}</small>`;
+    return `<div class="ln-row ${l.role === L.myRole ? 'mine' : ''}">
+      <div class="ln-role">${esc(ROLE_NAMES[l.role] || l.role)}${l.guessed ? ' <small title="Lane guessed from the champions and Smite">?</small>' : ''}</div>
+      ${side(l.ally, 'ally')}<div class="ln-diff">${lead}${who}</div>${side(l.enemy, 'enemy')}</div>`;
+  }).join('');
+  const td = L.allyGold - L.enemyGold;
+  return `<div class="card lanes">
+    <h3>Who's ahead <small>– gold from items (unspent gold of other players isn't visible to apps)</small></h3>
+    ${rows}
+    <div class="ln-row total"><div class="ln-role">Team</div><div class="ln-p ally"><div class="s">${k(L.allyGold)}</div></div>
+      <div class="ln-diff"><b class="${td >= 0 ? 'good' : 'bad'}">${td >= 0 ? '+' : '−'}${k(Math.abs(td))}</b></div><div class="ln-p enemy"><div class="s">${k(L.enemyGold)}</div></div></div>
+  </div>`;
+}
+
+function renderLive(data, lanes) {
   const players = data.allPlayers || [];
   const meName = data.activePlayer?.riotIdGameName || data.activePlayer?.summonerName || '';
   const kills = (team) => players.filter((p) => p.team === team).reduce((s, p) => s + (p.scores?.kills || 0), 0);
@@ -376,6 +401,7 @@ function renderLive(data) {
         <div class="live-score"><span class="blue">${kills('ORDER')}</span> – <span class="red">${kills('CHAOS')}</span></div></div>
       ${gold != null ? `<div><div class="sub">Your gold</div><div class="big" style="color:var(--gold)">${Math.floor(gold)}</div></div>` : ''}
     </div>
+    ${lanesCard(lanes)}
     <div class="teams">
       <div class="card team"><h3 class="blue">Blue team</h3>${players.filter((p) => p.team === 'ORDER').map(row).join('')}</div>
       <div class="card team"><h3 class="red">Red team</h3>${players.filter((p) => p.team === 'CHAOS').map(row).join('')}</div>
@@ -834,7 +860,7 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}${v.method === 'shop' ? ' (opens first in the in-game shop)' : ''}${v.removedBlitz ? ' (Blitz\'s set removed)' : ''}${v.notSelected ? ' (but League did not select the page – pick it yourself)' : ''}` : v.error}`);
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}${v.method === 'shop' ? (v.sets > 1 ? ` (${v.sets} builds in the in-game shop)` : ' (opens first in the in-game shop)') : ''}${v.removedBlitz ? ' (Blitz\'s set removed)' : ''}${v.notSelected ? ' (but League did not select the page – pick it yourself)' : ''}` : v.error}`);
   if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
   return parts.join(' · ');
 }
