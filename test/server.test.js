@@ -143,6 +143,36 @@ test('aktiwiteit-log en "Close Blitz" (net op Windows)', async () => {
   }
 });
 
+test('live game: wie is voor in elke lane, met goud uit items', async () => {
+  assert.equal((await call(port, 'GET', '/api/ddragon')).status, 200);
+  const { liveLanes } = require('../server')._test;
+  const P = (name, champ, team, position, items, extra = {}) => ({ riotId: `${name}#NA1`, riotIdGameName: name, championName: champ,
+    rawChampionName: `game_character_displayname_${champ}`, team, position, items, level: 6, scores: { kills: 1, deaths: 0, assists: 2, creepScore: 50 }, ...extra });
+  const smite = { summonerSpells: { summonerSpellOne: { displayName: 'Smite', rawDisplayName: 'GeneratedTip_SummonerSpell_SummonerSmite_DisplayName' }, summonerSpellTwo: { displayName: 'Flash' } } };
+  const L = liveLanes({
+    activePlayer: { riotId: 'Me#NA1', riotIdGameName: 'Me' },
+    allPlayers: [
+      P('Me', 'Annie', 'ORDER', 'MIDDLE', [{ itemID: 3089, count: 1, price: 1 }]), // prys uit Data Dragon (3600)
+      P('Top', 'Darius', 'ORDER', 'TOP', [{ itemID: 777, count: 2, price: 550 }]), // onbekend in Data Dragon: die API se prys
+      P('Mid', 'Syndra', 'CHAOS', 'MIDDLE', [{ itemID: 999, count: 1, price: 2000 }]),
+      P('Jgl', 'Zed', 'CHAOS', '', [], smite),
+    ],
+  });
+  assert.equal(L.myRole, 'MIDDLE');
+  assert.equal(L.allyGold, 4700);
+  assert.equal(L.enemyGold, 2000);
+  const mid = L.lanes.find((l) => l.role === 'MIDDLE');
+  assert.equal(mid.ally.champion, 'Annie');
+  assert.equal(mid.enemy.champion, 'Syndra');
+  assert.equal(mid.diff, 1600);
+  assert.equal(mid.guessed, false);
+  const jg = L.lanes.find((l) => l.role === 'JUNGLE');
+  assert.equal(jg.enemy.champion, 'Zed', 'Smite = jungle');
+  assert.equal(jg.diff, null);
+  assert.equal(jg.guessed, true);
+  assert.equal(L.lanes.find((l) => l.role === 'TOP').ally.gold, 1100);
+});
+
 test('die aktiwiteit-lys bly ná \'n herbegin (uit riftscout.log)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-log-'));
   fs.writeFileSync(path.join(dir, 'riftscout.log'), '2026-11-21T19:30:00.000Z Champ select started (your role: ADC).\nnie \'n datum nie\n2026-11-21T19:30:02.000Z Auto-import for Jinx ADC: runes ok, items ok\n');
