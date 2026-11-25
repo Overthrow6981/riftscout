@@ -42,12 +42,20 @@ function startFakeLcu({ games = 25, badGames = new Set() } = {}) {
     gameCalls: 0,
     puts: [],
     hang: new Set(), // roetes wat nooit antwoord nie (stadige kliënt)
+    delay: {},
+    flow: null, // /lol-gameflow/v1/session (wachtry en kaart), bv. { map: { id: 12 }, gameData: { queue: { id: 450, gameMode: 'ARAM' } } }
   };
   const json = (res, code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(body === undefined ? '' : JSON.stringify(body)); };
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => (body += d));
     req.on('end', () => {
+      // Vertraging vir 'n roete (bv. st.delay['POST /lol-perks/v1/pages'] = 1500): om gelyktydigheid te toets
+      const wait = st.delay[`${req.method} ${req.url.split('?')[0]}`];
+      if (wait) { delete st.delay[`${req.method} ${req.url.split('?')[0]}`]; return setTimeout(handle, wait); }
+      return handle();
+    });
+    function handle() {
       const [u, qs] = req.url.split('?');
       const q = new URLSearchParams(qs || '');
       const m = req.method;
@@ -55,6 +63,7 @@ function startFakeLcu({ games = 25, badGames = new Set() } = {}) {
       let x;
       if (st.hang.has(u)) return;
       if (u === '/lol-gameflow/v1/gameflow-phase') return json(res, 200, st.phase);
+      if (u === '/lol-gameflow/v1/session') return st.flow ? json(res, 200, st.flow) : json(res, 404, {});
       if (u === '/lol-champ-select/v1/session') return st.session ? json(res, 200, st.session) : json(res, 404, { message: 'No active delegate' });
       if (u === '/lol-summoner/v1/current-summoner') return json(res, 200, { summonerId: 777, puuid: ME, gameName: 'Me', tagLine: 'NA1', summonerLevel: 24, profileIconId: 1 });
       if (u === '/lol-platform-config/v1/namespaces/LoginDataPacket/platformId') return json(res, 200, 'NA1');
@@ -122,7 +131,7 @@ function startFakeLcu({ games = 25, badGames = new Set() } = {}) {
       if (u.startsWith('/lol-ranked/v1/ranked-stats/')) return json(res, 200, { queueMap: {} });
       if (u.endsWith('/champion-mastery')) return json(res, 200, []);
       json(res, 404, {});
-    });
+    }
   });
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => {
     const lockfile = path.join(install, 'lockfile');

@@ -166,11 +166,48 @@ test('live game: wie is voor in elke lane, met goud uit items', async () => {
   assert.equal(mid.enemy.champion, 'Syndra');
   assert.equal(mid.diff, 1600);
   assert.equal(mid.guessed, false);
+  assert.equal(mid.allyGuessed, false);
+  assert.equal(mid.enemyGuessed, false);
   const jg = L.lanes.find((l) => l.role === 'JUNGLE');
   assert.equal(jg.enemy.champion, 'Zed', 'Smite = jungle');
   assert.equal(jg.diff, null);
   assert.equal(jg.guessed, true);
+  assert.equal(jg.enemyGuessed, true);
   assert.equal(L.lanes.find((l) => l.role === 'TOP').ally.gold, 1100);
+  assert.equal(L.measure, 'item value', 'dit is itemwaarde, nie totale goud nie');
+  assert.equal(L.teamKnown, true);
+  assert.equal(L.laned, true);
+
+  // Sonder posisies (bv. 'n custom game) is jou eie span se lanes ook geraai
+  const G = liveLanes({
+    activePlayer: { riotId: 'Me#NA1', riotIdGameName: 'Me' },
+    allPlayers: [P('Me', 'Annie', 'ORDER', '', []), P('Op', 'Syndra', 'CHAOS', '', [])],
+  });
+  assert.ok(G.lanes.every((l) => l.guessed), 'sonder posisies is elke lane onseker');
+  assert.ok(G.lanes.some((l) => l.allyGuessed));
+
+  // ARAM: geen lanes nie, net die span se itemwaarde
+  const A = liveLanes({
+    activePlayer: { riotId: 'Me#NA1', riotIdGameName: 'Me' },
+    gameData: { gameMode: 'ARAM', mapNumber: 12 },
+    allPlayers: [P('Me', 'Annie', 'ORDER', '', [{ itemID: 3089, count: 1, price: 1 }]), P('Op', 'Syndra', 'CHAOS', '', [])],
+  });
+  assert.equal(A.laned, false);
+  assert.deepEqual(A.lanes, []);
+  assert.equal(A.allyGold, 3600);
+
+  // Swiftplay (en ander Summoner's Rift-modusse): lanes bly
+  const S = liveLanes({
+    activePlayer: { riotId: 'Me#NA1', riotIdGameName: 'Me' },
+    gameData: { gameMode: 'SWIFTPLAY', mapNumber: 11 },
+    allPlayers: [P('Me', 'Annie', 'ORDER', 'MIDDLE', []), P('Op', 'Syndra', 'CHAOS', 'MIDDLE', [])],
+  });
+  assert.equal(S.laned, true);
+  assert.equal(S.lanes.find((l) => l.role === 'MIDDLE').enemy.champion, 'Syndra');
+
+  // Jou span nie gevind nie (geen activePlayer): dit word gesê
+  const U = liveLanes({ allPlayers: [P('A', 'Annie', 'ORDER', 'MIDDLE', []), P('B', 'Syndra', 'CHAOS', 'MIDDLE', [])] });
+  assert.equal(U.teamKnown, false);
 });
 
 test('die aktiwiteit-lys bly ná \'n herbegin (uit riftscout.log)', async () => {

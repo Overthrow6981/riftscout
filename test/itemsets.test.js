@@ -49,7 +49,11 @@ test('die winkel-gids kom uit die League-gids (ook op E:), Garena se Game\\Confi
   assert.deepEqual(F.shopFolders(path.join(garena, 'LeagueClient')), [path.join(garena, 'LeagueClient', '..', 'Game', 'Config', 'Global', 'Recommended')]);
 });
 
-test('skryf ons set, haal Blitz se oorblyfsels uit, los die speler en ander apps se lêers', () => {
+// Blitz se sets word na 'n rugsteun-gids geskuif (nie uitgevee nie)
+const tmpBackup = () => { const d = fs.mkdtempSync(path.join(os.tmpdir(), 'rs-backup-')); lcu.setBackupDir(d); return d; };
+
+test('skryf ons set, skuif Blitz se oorblyfsels na die rugsteun, los die speler en ander apps se lêers', () => {
+  const backup = tmpBackup();
   const dir = tmpLeague();
   const [folder] = F.shopFolders(dir);
   fs.mkdirSync(folder, { recursive: true });
@@ -66,9 +70,19 @@ test('skryf ons set, haal Blitz se oorblyfsels uit, los die speler en ander apps
   assert.deepEqual(st, { ours: true, first: true, blitz: 2 });
   assert.ok(!fs.existsSync(path.join(folder, `${F.SHOP_FILE_PREFIX}3.json`)), 'ons ou lêers is weg');
   // Met die voorkeur aan: Blitz se twee sets weg (op naam en op titel), alles anders bly
+  const blitzBytes = fs.readFileSync(path.join(folder, '!!!blitz-0.json'));
   r = F.writeShopFiles([folder], F.shopSet('Senna', 'RiftScout Senna', blocks), { removeBlitz: true });
   assert.equal(r.removedBlitz, 2);
   assert.deepEqual(fs.readdirSync(folder).sort(), [`${F.SHOP_FILE_PREFIX}0.json`, 'crank.json', 'mine.json']);
+  // ... maar nie uitgevee nie: albei is in die rugsteun, met waar hulle was, byte vir byte dieselfde
+  const list = lcu.listBlitzBackups();
+  assert.equal(list.length, 2);
+  const b0 = list.find((e) => e.name === '!!!blitz-0.json');
+  assert.equal(b0.kind, 'file');
+  assert.equal(b0.from, path.resolve(folder, '!!!blitz-0.json'));
+  assert.equal(b0.title, 'Blitz: Crit Miss Fortune');
+  assert.deepEqual(fs.readFileSync(path.join(backup, 'blitz-backup', `${b0.id}.json`)), blitzBytes);
+  assert.ok(list.some((e) => e.name === 'other-name.json'));
   const saved = JSON.parse(fs.readFileSync(path.join(folder, `${F.SHOP_FILE_PREFIX}0.json`), 'utf8'));
   assert.equal(saved.title, 'RiftScout Senna');
   assert.ok(!fs.readdirSync(folder).some((n) => n.endsWith('.tmp')), 'geen halwe lêers bly oor nie');
@@ -85,6 +99,7 @@ test('\'n ander set met priority en \'n hoër rang word raakgesien (nie meer eer
 });
 
 test('opruim ná die game haal net ons lêer uit', () => {
+  tmpBackup();
   const dir = tmpLeague();
   const [folder] = F.shopFolders(dir);
   F.writeShopFiles([folder], F.shopSet('Senna', 'RiftScout Senna', blocks));
@@ -93,6 +108,52 @@ test('opruim ná die game haal net ons lêer uit', () => {
   assert.deepEqual(fs.readdirSync(folder), ['!!!blitz-0.json']);
   assert.equal(F.removeShopFiles([folder], { ours: false, blitz: true }), 1, '"Close Blitz": Blitz se oorblyfsels');
   assert.deepEqual(fs.readdirSync(folder), []);
+  assert.equal(lcu.listBlitzBackups().length, 1, 'in die rugsteun');
+});
+
+test('Blitz-rugsteun: sonder rugsteun-gids bly Blitz se lêer; gidse, skakels en eie sets word nooit geskuif nie', () => {
+  lcu.setBackupDir(null);
+  const dir = tmpLeague();
+  const [folder] = F.shopFolders(dir);
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, '!!!blitz-0.json'), JSON.stringify(blitzSet));
+  assert.equal(F.removeShopFiles([folder], { ours: false, blitz: true }), 0, 'geen rugsteun: niks geskuif');
+  assert.ok(fs.existsSync(path.join(folder, '!!!blitz-0.json')));
+
+  tmpBackup();
+  fs.mkdirSync(path.join(folder, '!!!blitz-dir.json')); // 'n gids met 'n Blitz-naam
+  fs.writeFileSync(path.join(folder, 'blitz build.json'), JSON.stringify({ title: 'Blitz build for me', blocks: [] })); // naam lyk soos Blitz s'n
+  fs.writeFileSync(path.join(folder, 'own.json'), JSON.stringify({ title: 'Blitz build for me', blocks: [] })); // titel sonder "Blitz:"
+  F.removeShopFiles([folder], { ours: false, blitz: true });
+  assert.ok(fs.statSync(path.join(folder, '!!!blitz-dir.json')).isDirectory(), 'gids bly');
+  assert.ok(fs.existsSync(path.join(folder, 'own.json')), "'n eie set met \"Blitz\" in die titel (sonder Blitz se skeidingsteken) bly");
+  assert.ok(!fs.existsSync(path.join(folder, '!!!blitz-0.json')));
+  assert.ok(!F.isBlitzTitle('Blitz build for me'));
+  assert.ok(F.isBlitzTitle('Blitz: Crit Miss Fortune'));
+  assert.ok(F.isBlitzTitle('Blitz - Miss Fortune ADC'));
+  assert.ok(!F.isBlitzTitle('Blitzcrank hooks'));
+});
+
+test('Blitz-rugsteun: dieselfde lêer elke game word net een keer gestoor; hoogstens 40 rugsteune', () => {
+  const backup = tmpBackup();
+  const dir = tmpLeague();
+  const [folder] = F.shopFolders(dir);
+  fs.mkdirSync(folder, { recursive: true });
+  for (let i = 0; i < 3; i++) {
+    fs.writeFileSync(path.join(folder, '!!!blitz-0.json'), JSON.stringify(blitzSet));
+    F.removeShopFiles([folder], { ours: false, blitz: true });
+  }
+  let list = lcu.listBlitzBackups();
+  assert.equal(list.length, 1);
+  assert.equal(list[0].times, 3);
+  for (let i = 0; i < 45; i++) {
+    fs.writeFileSync(path.join(folder, '!!!blitz-0.json'), JSON.stringify({ ...blitzSet, title: `Blitz: Set ${i}` }));
+    F.removeShopFiles([folder], { ours: false, blitz: true });
+  }
+  list = lcu.listBlitzBackups();
+  assert.equal(list.length, 40);
+  const files = fs.readdirSync(path.join(backup, 'blitz-backup')).filter((n) => n !== 'manifest.json');
+  assert.equal(files.length, 40, 'die oudste rugsteun-lêers is opgeruim');
 });
 
 test('rekening se lys: ons set eerste, ander sets onveranderd, hoogstens 8 van ons sets', () => {
@@ -113,13 +174,15 @@ test('rekening se lys: ons set eerste, ander sets onveranderd, hoogstens 8 van o
 test('soos Blitz: \'n paar build-keuses, elk in sy eie lêer en in vaste volgorde', () => {
   const dir = tmpLeague();
   const [folder] = F.shopFolders(dir);
-  const sets = ['Main', 'Kraken Slayer build', 'Stormrazor build', 'te veel'].map((t, i) => F.shopSet('Senna', `RiftScout Senna: ${t}`, blocks, F.SHOP_RANK - i));
+  // Soos writeShopItemSet dit doen (en soos Blitz se kode): net die eerste set het priority
+  const sets = ['Main', 'Kraken Slayer build', 'Stormrazor build', 'te veel'].map((t, i) => F.shopSet('Senna', `RiftScout Senna: ${t}`, blocks, F.SHOP_RANK - i, 235, i === 0));
   F.writeShopFiles([folder], sets);
   const names = fs.readdirSync(folder).sort();
   assert.deepEqual(names, [0, 1, 2].map((i) => `${F.SHOP_FILE_PREFIX}${i}.json`), `hoogstens ${F.MAX_SHOP_SETS} sets`);
   const read = names.map((n) => JSON.parse(fs.readFileSync(path.join(folder, n), 'utf8')));
   assert.deepEqual(read.map((s) => s.sortrank), [F.SHOP_RANK, F.SHOP_RANK - 1, F.SHOP_RANK - 2]);
-  assert.ok(read.every((s) => s.priority === true));
+  assert.deepEqual(read.map((s) => s.priority), [true, false, false]);
+  assert.ok(read.every((s) => s.associatedChampions[0] === 235 && s.championKey === 'Senna'), 'elke keuse is vir dieselfde champion');
   assert.deepEqual(F.shopFilesStatus([folder]), { ours: true, first: true, blitz: 0 });
   // Volgende champion met net een build: die ou ekstra lêers gaan weg
   F.writeShopFiles([folder], F.shopSet('Lux', 'RiftScout Lux', blocks));
@@ -151,4 +214,20 @@ test('build-keuses: net kern-builds met genoeg games en ander items, met hul eie
   const names = itemSets('RiftScout Vayne Bottom', 'Vayne', rec2).map((x) => x.title);
   assert.equal(names.length, 3);
   assert.equal(new Set(names).size, 3, names.join(' / '));
+});
+
+test('Blitz-rugsteun terugsit: net presies waar dit was, nie oor \'n bestaande lêer nie', async () => {
+  tmpBackup();
+  const dir = tmpLeague();
+  const [folder] = F.shopFolders(dir);
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, '!!!blitz-0.json'), JSON.stringify(blitzSet));
+  F.removeShopFiles([folder], { ours: false, blitz: true });
+  const [e] = lcu.listBlitzBackups();
+  // installDir kom uit League; hier sonder League: die terugsit weier
+  const none = await lcu.restoreBlitzBackup(e.id);
+  assert.equal(none.ok, false);
+  assert.match(none.error, /League client/);
+  assert.equal((await lcu.restoreBlitzBackup('../../etc')).ok, false, 'vreemde id word geweier');
+  assert.equal((await lcu.restoreBlitzBackup('zzzzzzzz')).ok, false);
 });
