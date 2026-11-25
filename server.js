@@ -17,6 +17,8 @@ const HOST_TEMPLATE = process.env.RIOT_HOST_TEMPLATE || 'https://{route}.api.rio
 const LIVE_URL = process.env.LIVE_CLIENT_URL || 'https://127.0.0.1:2999/liveclientdata/allgamedata';
 const DDRAGON = process.env.DDRAGON_BASE || 'https://ddragon.leagueoflegends.com';
 const REMOTE_BUILDS_URL = process.env.REMOTE_BUILDS_URL || 'https://github.com/Overthrow6981/riftscout/releases/download/build-data/builds.json';
+// Die versamelaar se status (tools/collect.js): wanneer daar laas nuwe games bygekom het, en of die sleutel nog werk
+const REMOTE_STATUS_URL = process.env.REMOTE_STATUS_URL || REMOTE_BUILDS_URL.replace(/builds\.json$/, 'build-status.json');
 const CRAWL_PACE_MS = process.env.CRAWL_PACE_MS != null ? Number(process.env.CRAWL_PACE_MS) : 1700;
 const APP_VERSION = require('./package.json').version;
 const MIN_GAMES = 10;
@@ -27,8 +29,18 @@ const DDRAGON_TIMEOUT_MS = Number(process.env.DDRAGON_TIMEOUT_MS) || 20000;
 let DATA_DIR = __dirname;
 let CACHE_DIR = path.join(__dirname, 'cache', 'matches');
 let CONFIG_FILE = path.join(__dirname, 'config.json');
-let API_KEY = (process.env.RIOT_API_KEY || '').trim();
+const ENV_KEY = (process.env.RIOT_API_KEY || '').trim();
+let API_KEY = ENV_KEY;
 let CONFIG = null;
+// Die Riot-sleutel word met Windows se eie versleuteling (Electron safeStorage / DPAPI) gestoor as dit beskikbaar is;
+// main.js gee die funksies. Los (node server.js) of sonder versleuteling: gewone teks in config.json, soos voorheen.
+let SECRETS = null; // { available(): bool, encrypt(text): base64, decrypt(base64): text }
+let KEY_STORAGE = 'none'; // 'encrypted' | 'plain' | 'env' | 'none'
+let keyLoadError = null;
+
+// Riot-sleutels kom nooit in die log, foutboodskappe of antwoorde nie
+const KEY_PATTERN = /RGAPI-[0-9a-f-]{8,}/gi;
+const redact = (v) => String(v == null ? '' : v).replace(KEY_PATTERN, 'RGAPI-***');
 
 function loadConfig() {
   if (!CONFIG) {
@@ -39,7 +51,58 @@ function loadConfig() {
 function saveConfig(cfg) {
   CONFIG = cfg;
   fs.mkdirSync(path.dirname(CONFIG_FILE), { recursive: true });
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+  const text = JSON.stringify(cfg, null, 2);
+  const tmp = CONFIG_FILE + '.tmp';
+  try {
+    fs.writeFileSync(tmp, text, { mode: 0o600 });
+    fs.renameSync(tmp, CONFIG_FILE);
+  } catch {
+    // Windows: die hernoem kan misluk as antivirus of die indekseerder config.json oop hou; dan direk skryf
+    try { fs.rmSync(tmp, { force: true, recursive: true }); } catch { /* los */ }
+    fs.writeFileSync(CONFIG_FILE, text, { mode: 0o600 });
+  }
+}
+const secretsOk = () => { try { return !!(SECRETS && SECRETS.available()); } catch { return false; } };
+// Lees die gestoorde sleutel (en skuif 'n ou gewone-teks-sleutel na die versleutelde vorm)
+function loadSavedKey() {
+  const cfg = loadConfig();
+  keyLoadError = null;
+  if (cfg.apiKeyEnc) {
+    if (!secretsOk()) { keyLoadError = 'Your saved Riot API key is encrypted, but Windows encryption is not available right now. Paste the key again.'; return ''; }
+    try { KEY_STORAGE = 'encrypted'; return String(SECRETS.decrypt(cfg.apiKeyEnc) || '').trim(); }
+    catch { keyLoadError = 'Your saved Riot API key could not be read (it was saved under another Windows account or the file changed). Paste it again under Settings.'; KEY_STORAGE = 'none'; return ''; }
+  }
+  if (cfg.apiKey) {
+    const key = cfg.apiKey;
+    if (secretsOk()) {
+      try {
+        const enc = SECRETS.encrypt(key);
+        if (enc) {
+          const next = { ...cfg, apiKeyEnc: enc };
+          delete next.apiKey;
+          saveConfig(next); // eers gestoor, dan eers is die gewone teks weg
+          KEY_STORAGE = 'encrypted';
+          return key;
+        }
+      } catch { CONFIG = cfg; /* bly gewone teks (soos voorheen) */ }
+    }
+    KEY_STORAGE = 'plain';
+    return key;
+  }
+  return '';
+}
+function storeKey(key) {
+  const cfg = loadConfig();
+  delete cfg.apiKey;
+  delete cfg.apiKeyEnc;
+  KEY_STORAGE = 'none';
+  if (key) {
+    let enc = null;
+    if (secretsOk()) { try { enc = SECRETS.encrypt(key); } catch { enc = null; } }
+    if (enc) { cfg.apiKeyEnc = enc; KEY_STORAGE = 'encrypted'; } else { cfg.apiKey = key; KEY_STORAGE = 'plain'; }
+  }
+  keyLoadError = null;
+  saveConfig(cfg);
 }
 
 const DEFAULT_PREFS = {
@@ -107,7 +170,7 @@ async function riot(route, apiPath, attempt = 0) {
     res = await fetch(url, { headers: { 'X-Riot-Token': API_KEY }, signal: AbortSignal.timeout(RIOT_TIMEOUT_MS) });
   } catch (err) {
     if (err.name === 'TimeoutError') throw httpError(504, 'The Riot API is not responding right now. Try again in a minute.');
-    throw httpError(502, 'Could not reach the Riot API: ' + err.message);
+    throw httpError(502, 'Could not reach the Riot API: ' + redact(err.message));
   }
   if (res.status === 429 && attempt < 3) {
     const retry = Number(res.headers.get('retry-after')) || 2;
@@ -322,9 +385,10 @@ function getLiveData() {
   });
 }
 
-// ---------- Goud per lane (soos Blitz): wie is voor, jy of jou teenstander? ----------
-// Riot se Live Client API gee nie die ander spelers se goud nie; net hul items. Soos Blitz tel ons dus die
-// waarde van elke speler se items (Data Dragon se prys, anders die API s'n). Onbestede goud tel nie.
+// ---------- Itemwaarde per lane: wie se items is meer werd, jy of jou teenstander? ----------
+// Riot se Live Client API gee nie die ander spelers se goud nie; net hul items. Ons tel dus die waarde van elke
+// speler se HUIDIGE items (Data Dragon se prys, anders die API s'n). Dit is nie totale goud nie: onbestede goud,
+// verkoopte en opgebruikte items (bv. potions, wards) tel nie. Die app noem dit daarom "item value".
 let lastAllyRoles = new Map(); // championId -> rol, uit die laaste champ select
 const LIVE_POSITIONS = { TOP: 'TOP', JUNGLE: 'JUNGLE', MIDDLE: 'MIDDLE', MID: 'MIDDLE', BOTTOM: 'BOTTOM', BOT: 'BOTTOM', UTILITY: 'UTILITY', SUPPORT: 'UTILITY' };
 function liveChampionId(p) {
@@ -384,14 +448,23 @@ function liveLanes(data) {
   const ar = teamRoles(ally, true);
   const er = teamRoles(enemy, false);
   const strip = (p) => p && { championId: p.championId, champion: p.champion, name: p.name, level: p.level, gold: p.gold, cs: p.cs, kills: p.kills, deaths: p.deaths, assists: p.assists, me: p.me };
-  const lanes = builds.ROLES.map((role) => {
+  // Lanes net op Summoner's Rift (nie ARAM, Arena ens. nie): daar wys ons net die span se totaal
+  const gd = data.gameData || {};
+  const laned = gd.mapNumber ? gd.mapNumber === 11 : !['ARAM', 'CHERRY'].includes(String(gd.gameMode || '').toUpperCase());
+  const lanes = !laned ? [] : builds.ROLES.map((role) => {
     const x = ally.find((p) => ar.roles[p.championId] === role);
     const y = enemy.find((p) => er.roles[p.championId] === role);
     if (!x && !y) return null;
-    return { role, ally: strip(x), enemy: strip(y), diff: x && y ? x.gold - y.gold : null, guessed: !!y && !er.sure(y.championId) };
+    const allyGuessed = !!x && !ar.sure(x.championId);
+    const enemyGuessed = !!y && !er.sure(y.championId);
+    return { role, ally: strip(x), enemy: strip(y), diff: x && y ? x.gold - y.gold : null, allyGuessed, enemyGuessed, guessed: allyGuessed || enemyGuessed };
   }).filter(Boolean);
   const sum = (ps) => ps.reduce((t, p) => t + p.gold, 0);
-  return { lanes, allyGold: sum(ally), enemyGold: sum(enemy), myRole: meP ? ar.roles[liveChampionId(meP)] || null : null };
+  return {
+    lanes, laned, allyGold: sum(ally), enemyGold: sum(enemy), myRole: meP ? ar.roles[liveChampionId(meP)] || null : null,
+    teamKnown: !!meP, // kon ons jou span vind? Anders is "jou span" 'n aanname (blou)
+    measure: 'item value', // waarde van huidige items, nie totale goud nie
+  };
 }
 
 // ---------- Data Dragon (statiese data: weergawe, spells, runes, champions, items) ----------
@@ -447,7 +520,23 @@ async function getDDragon() {
 let db = null;
 let seen = null;
 let crawler = null;
-let remoteInfo = { matches: 0, updated: 0, regions: [] };
+let remoteInfo = { matches: 0, updated: 0, lastMatchAt: 0, regions: [] };
+let collectorStatus = null; // build-status.json van die gedeelde versamelaar (of null)
+const STALE_DATA_MS = 3 * 24 * 3600e3; // ouer as 3 dae sonder nuwe games: die app sê so
+const currentPatch = () => (DD && DD.version ? builds.patchOf(DD.version) : null);
+// Hoe vars is die build-data? Die nuutste game wat bygevoeg is (nie wanneer die lêer laas geskryf is nie)
+function dataInfo() {
+  const shared = remoteInfo.lastMatchAt || (collectorStatus && collectorStatus.lastMatchAt) || 0;
+  const local = (db && db.data && db.data.lastMatchAt) || 0;
+  const newest = Math.max(shared, local) || null;
+  return {
+    newestGameAt: newest,
+    stale: !newest || Date.now() - newest > STALE_DATA_MS,
+    currentPatch: currentPatch(),
+    collector: collectorStatus ? { ok: !!collectorStatus.ok, error: collectorStatus.error || null, lastRun: collectorStatus.lastRun || null, lastSuccess: collectorStatus.lastSuccess || null } : null,
+    source: 'high-elo ranked solo games on Summoner\'s Rift',
+  };
+}
 let lastUserActivity = 0;
 
 // Streek vir build-data: jou keuse in Settings, anders jou eie bediener (uit League), anders jou laaste soektog
@@ -470,7 +559,7 @@ async function loadRemoteBuilds() {
   const use = (d) => {
     if (d && d.patches) {
       db.remote = d;
-      remoteInfo = { matches: d.matches || 0, updated: d.updated || 0, regions: Object.keys(d.regions || {}).sort((a, b) => d.regions[b] - d.regions[a]) };
+      remoteInfo = { matches: d.matches || 0, updated: d.updated || 0, lastMatchAt: d.lastMatchAt || 0, regions: Object.keys(d.regions || {}).sort((a, b) => d.regions[b] - d.regions[a]) };
       return true;
     }
     return false;
@@ -480,6 +569,11 @@ async function loadRemoteBuilds() {
     const text = await fetchRemoteBuilds();
     if (text && use(JSON.parse(text))) fs.writeFileSync(file, text);
   } catch { /* geen gedeelde data beskikbaar nie */ }
+  try {
+    const r = await fetch(REMOTE_STATUS_URL, { signal: AbortSignal.timeout(30000) });
+    const st = r.ok ? await r.json() : null;
+    if (st && st.schema === 1) collectorStatus = st;
+  } catch { /* ouer versamelaar: nog geen statuslêer nie */ }
 }
 
 // Gedeelde data: eers die saamgepakte weergawe (baie kleiner aflaai), anders die gewone JSON
@@ -492,6 +586,9 @@ async function fetchRemoteBuilds() {
   return r.ok ? r.text() : null;
 }
 
+// Onder RELIABLE_GAMES games wys die app 'n wenpersentasie grys met "few games" (nie as 'n betroubare syfer nie)
+const RELIABLE_GAMES = 30;
+const MATCHUP_LIST_MIN = 10;
 function buildFor(championId, role, strict, vs) {
   const roles = db.rolesFor(championId);
   let use = role;
@@ -501,7 +598,9 @@ function buildFor(championId, role, strict, vs) {
   }
   const { stats, patches } = db.statsFor(championId, use);
   const all = use ? builds.matchups(stats, 1) : [];
-  const solid = all.filter((m) => m.games >= 5);
+  // Sterk/swak teen: net matchups met genoeg games, gesorteer met min games na 50% toe getrek (soos die
+  // counter-lys), sodat 5 games met 0% nie bo 80 games met 44% kom nie. Die app wys die getal games by elkeen.
+  const solid = all.filter((m) => m.games >= MATCHUP_LIST_MIN).map((m) => ({ ...m, score: builds.smoothed(m.wins, m.games) }));
   const rec = use ? builds.recommend(stats, vs || null) : null;
   if (rec && vs) {
     // Dieselfde syfers as die counter-lys in champ select (alle gestoorde patches)
@@ -512,8 +611,9 @@ function buildFor(championId, role, strict, vs) {
     championId, role: use || '', roles, patches, minGames: MIN_GAMES, matchupMin: builds.MATCHUP_MIN,
     rec,
     opponents: all.sort((a, b) => b.games - a.games).map(({ championId: id, games }) => ({ championId: id, games })),
-    strongAgainst: solid.filter((m) => m.wr >= 0.5).sort((a, b) => b.wr - a.wr || b.games - a.games).slice(0, 6),
-    weakAgainst: solid.filter((m) => m.wr < 0.5).sort((a, b) => a.wr - b.wr || b.games - a.games).slice(0, 6),
+    strongAgainst: solid.filter((m) => m.score >= 0.5).sort((a, b) => b.score - a.score || b.games - a.games).slice(0, 6),
+    weakAgainst: solid.filter((m) => m.score < 0.5).sort((a, b) => a.score - b.score || b.games - a.games).slice(0, 6),
+    reliableGames: RELIABLE_GAMES,
   };
 }
 
@@ -536,7 +636,7 @@ function countersFor(enemyId, role, mineId) {
       ? { championId: mineId, games: m.games, wins: m.games - m.wins, wr: 1 - m.wins / m.games, laneGames: m.lane ? m.lane[0] : 0, laneWr: m.lane && m.lane[0] ? 1 - m.lane[1] / m.lane[0] : null }
       : { championId: mineId, games: 0 };
   }
-  return { enemyId, role: use, enemyGames: enemy.games, minGames: COUNTER_MIN, counters, best, mine };
+  return { enemyId, role: use, enemyGames: enemy.games, minGames: COUNTER_MIN, reliableGames: RELIABLE_GAMES, counters, best, mine };
 }
 
 // Riot se eie lys van watter posisies elke champion speel (uit die League-kliënt) – werk sonder build-data
@@ -782,6 +882,7 @@ async function doImport(championId, role, what, cs, vs, runeIndex = 0) {
   return {
     ok: Object.values(results).every((r) => r.ok), championId, champion: champ.name, role: b.role,
     vs: vs || null, vsName, matchupSpecific: rec.fromMatchup.length > 0, results, at: Date.now(),
+    source: 'riftscout', games: rec.games, patches: b.patches,
   };
 }
 
@@ -800,7 +901,7 @@ function onChampSelectStart(fn) { champSelectListeners.push(fn); }
 // Wat RiftScout in champ select gedoen het (en of Blitz iets oorgeskryf het): in Settings te sien en in riftscout.log
 const activity = [];
 function logEvent(msg) {
-  const e = { at: Date.now(), msg: String(msg).slice(0, 300) };
+  const e = { at: Date.now(), msg: redact(msg).slice(0, 300) };
   activity.push(e);
   if (activity.length > 40) activity.shift();
   try {
@@ -816,8 +917,9 @@ function importNote(kind, v) {
   const bits = [];
   if (kind === 'items') bits.push(v.method === 'shop' ? `shop file${v.sets > 1 ? `, ${v.sets} builds` : ''}` : 'account item set');
   if (v.note) bits.push(v.note);
-  if (v.removedBlitz) bits.push(`removed ${v.removedBlitz} Blitz set${v.removedBlitz === 1 ? '' : 's'}`);
-  if (v.replaced) bits.push(`replaced page "${v.replaced}"`);
+  if (kind === 'items' && (v.kind === 'mixed' || v.kind === 'similar')) bits.push('fallback: items from champions that build alike');
+  if (v.removedBlitz) bits.push(`moved ${v.removedBlitz} Blitz set${v.removedBlitz === 1 ? '' : 's'} to RiftScout's backup`);
+  if (v.replaced) bits.push(`replaced your page "${v.replaced}" because all pages were full${v.backupId ? ' – a backup is in Settings' : ' (it had no runes)'}`);
   if (v.notSelected) bits.push('page not selected in League');
   return bits.length ? ` (${bits.join(', ')})` : '';
 }
@@ -829,17 +931,50 @@ function loadActivity() {
     for (const line of lines) {
       const i = line.indexOf(' ');
       const at = Date.parse(line.slice(0, i));
-      if (i > 0 && Number.isFinite(at)) activity.push({ at, msg: line.slice(i + 1).slice(0, 300) });
+      if (i > 0 && Number.isFinite(at)) activity.push({ at, msg: redact(line.slice(i + 1)).slice(0, 300) }); // ook ou reëls
     }
   } catch { /* nog geen log */ }
 }
+
+// ---------- Rugsteun van rune pages ----------
+// Voor RiftScout 'n rune page uitvee (net as al jou bladsye vol is en "Replace a rune page when all are full" aan is),
+// stoor dit die bladsy in <data>\rune-backups.json. In Settings kan jy dit terugsit.
+const RUNE_BACKUP_MAX = 20;
+const runeBackupFile = () => path.join(DATA_DIR, 'rune-backups.json');
+function readRuneBackups() {
+  try {
+    const list = JSON.parse(fs.readFileSync(runeBackupFile(), 'utf8'));
+    return Array.isArray(list) ? list.filter((e) => e && typeof e.id === 'string' && Array.isArray(e.selectedPerkIds)) : [];
+  } catch { return []; }
+}
+function writeRuneBackups(list) {
+  const tmp = runeBackupFile() + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(list.slice(0, RUNE_BACKUP_MAX), null, 1));
+  fs.renameSync(tmp, runeBackupFile());
+}
+function saveRuneBackup(page) {
+  const perks = (page && Array.isArray(page.selectedPerkIds) ? page.selectedPerkIds : []).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+  if (!page) return null;
+  if (perks.length < 6) return { id: null, empty: true }; // 'n leë bladsy: niks om te verloor nie
+  const entry = {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    name: String(page.name || 'Rune page').slice(0, 60),
+    primaryStyleId: Number(page.primaryStyleId) || 0,
+    subStyleId: Number(page.subStyleId) || 0,
+    selectedPerkIds: perks,
+    at: Date.now(),
+  };
+  writeRuneBackups([entry, ...readRuneBackups()]);
+  return entry;
+}
+const runeBackupOpts = { backup: (p) => saveRuneBackup(p) };
 
 // Rune page in League sit, en onthou dit sodat ons dit kan herstel as Blitz sy eie page daarna kies
 let runeGuard = null;
 let lcuWasConnected = false;
 async function importRunes(page, name, replace) {
-  const r = await lcu.importRunes(page, name, replace);
-  if (r.ok) runeGuard = { page, name, replace, fixes: 0, nextCheck: Date.now() + GUARD_EVERY_MS };
+  const r = await lcu.importRunes(page, name, replace, runeBackupOpts);
+  if (r.ok) runeGuard = { page, name, fixes: 0, nextCheck: Date.now() + GUARD_EVERY_MS };
   return r;
 }
 async function guardRunes() {
@@ -850,8 +985,9 @@ async function guardRunes() {
   const cur = await lcu.currentRunePage().catch(() => null);
   if (!lcu.isBlitzPage(cur)) return; // jou eie keuse of RiftScout s'n: los dit
   g.fixes++;
-  const r = await lcu.importRunes(g.page, g.name, g.replace).catch(() => null);
-  logEvent(`Blitz switched to its rune page "${cur.name}" – RiftScout put "${g.name}" back: ${resultText(r)}`);
+  // Die huidige instelling geld (as jy "Replace a rune page" intussen afgesit het, word niks vervang nie)
+  const r = await lcu.importRunes(g.page, g.name, getPrefs().replacePages, runeBackupOpts).catch(() => null);
+  logEvent(`Blitz switched to its rune page "${cur.name}" – RiftScout put "${g.name}" back: ${resultText(r)}${importNote('runes', r)}`);
 }
 
 // Item set in League sit, en onthou dit sodat ons kan kyk of 'n ander app (bv. Blitz) dit daarna oorskryf
@@ -903,7 +1039,12 @@ async function guardItemSet() {
     ? await writeItems(g.championId, g.champName, g.title, g.blocks, g.opts).catch(() => null)
     : await lcu.importItemSet(g.championId, g.title, g.blocks, g.opts).catch(() => null);
   const why = !st.ours ? 'Another app removed RiftScout\'s item set' : st.blitz > 0 ? 'Blitz wrote its item set again' : 'Another item set was put first';
-  logEvent(`${why} – restored "${g.title}": ${resultText(r)}${r && r.removedBlitz ? ` (removed ${r.removedBlitz} Blitz set${r.removedBlitz === 1 ? '' : 's'})` : ''}`);
+  logEvent(`${why} – restored "${g.title}": ${resultText(r)}${r && r.removedBlitz ? ` (moved ${r.removedBlitz} Blitz set${r.removedBlitz === 1 ? '' : 's'} to RiftScout's backup)` : ''}`);
+  // Blitz se lêer kon nie geskuif word nie (gesluit, te groot, geen rugsteun): nie aanhou probeer nie
+  if (st.ours && st.first && st.blitz > 0 && r && r.ok && !r.removedBlitz) {
+    g.fixes = GUARD_MAX_FIXES;
+    logEvent('RiftScout could not move Blitz\'s item set file (locked, too big or no backup possible) – it stays in the shop. RiftScout\'s set is still listed first.');
+  }
 }
 // Ná die game, of as champ select sonder 'n game eindig: ons set uit die winkel (dit sou anders vir elke champion wys)
 async function clearShopFile(reason) {
@@ -946,6 +1087,8 @@ async function lcuTick() {
       cs.vsAuto = enemyLaner(cs.enemies || [], cs.role, cs.enemyRoles);
       cs.vsManual = !!vsOverride && (cs.enemies || []).includes(vsOverride);
       cs.vs = cs.vsManual ? vsOverride : cs.vsAuto;
+      // ARAM (Howling Abyss): RiftScout het net Summoner's Rift-data; die app en die log sê dit
+      cs.aram = cs.mapId === 12 || cs.gameMode === 'ARAM';
       // Jou span se rolle uit champ select onthou: in die game wys ons daarmee wie teen wie in elke lane is
       const roles = new Map((cs.allies || []).filter((a) => a.championId > 0 && a.role).map((a) => [a.championId, a.role]));
       if (cs.championId && cs.role) roles.set(cs.championId, cs.role);
@@ -1014,7 +1157,10 @@ async function lcuTick() {
     // Moet nog 'n keer probeer (bv. Riot se rune page nog nie gereed nie): hoogstens 5 keer, net die eerste keer in die log
     autoRetry = autoRetry.key === key ? { key, n: autoRetry.n + 1 } : { key, n: 0 };
     if (!result.retry || autoRetry.n === 0) {
-      logEvent(`Auto-import for ${cname}${cs.role ? ` ${ROLE_NAMES[cs.role] || cs.role}` : ''}${cs.vs ? ` vs ${(DD.champions[cs.vs] || {}).name || cs.vs}` : ''}: ${parts.join(', ') || result.error || 'nothing imported'}`);
+      const basis = cs.aram ? ' [ARAM – runes are from Summoner\'s Rift ranked games, RiftScout has no ARAM data]'
+        : !cs.role ? ' [no assigned role – runes for the champion\'s most-played role]'
+          : result.source === 'riot' ? ' [too few RiftScout games – Riot\'s recommended runes]' : '';
+      logEvent(`Auto-import for ${cname}${cs.role ? ` ${ROLE_NAMES[cs.role] || cs.role}` : ''}${cs.vs ? ` vs ${(DD.champions[cs.vs] || {}).name || cs.vs}` : ''}: ${parts.join(', ') || result.error || 'nothing imported'}${basis}`);
     }
     if (!result.retry || autoRetry.n >= 4) {
       lastAutoKey = key;
@@ -1252,6 +1398,12 @@ async function getLobby() {
 }
 
 // ---------- Roetes ----------
+const CSP = [
+  "default-src 'self'", "script-src 'self'", "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: https://ddragon.leagueoflegends.com https://raw.communitydragon.org",
+  "connect-src 'self' https://ddragon.leagueoflegends.com", "font-src 'self'", "object-src 'none'",
+  "base-uri 'none'", "form-action 'self'", "frame-ancestors 'none'",
+].join('; ');
 const app = express();
 app.disable('x-powered-by');
 
@@ -1263,17 +1415,23 @@ app.use((req, res, next) => {
   if (!okHosts.includes(req.headers.host)) return res.status(403).send('Forbidden');
   const origin = req.headers.origin;
   if (origin && !okHosts.some((h) => origin === `http://${h}`)) return res.status(403).json({ error: 'Forbidden' });
-  // Geen ander webwerf mag RiftScout in 'n raam laai nie (clickjacking)
+  // Blaaiers sê ook van watter werf 'n versoek kom: 'n ander werf (ook 'n ander plaaslike poort) mag nie eers
+  // GET-versoeke stuur nie (bv. 'n <img> wat Riot-opsoeke met jou sleutel laat doen)
+  const site = req.headers['sec-fetch-site'];
+  if (site && site !== 'same-origin' && site !== 'none') return res.status(403).json({ error: 'Forbidden' });
+  // Geen ander webwerf mag RiftScout in 'n raam laai nie (clickjacking); die blad laai net sy eie skrip en
+  // prente van Riot se Data Dragon (en CommunityDragon vir rune-skerwe)
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  res.setHeader('Content-Security-Policy', CSP);
   res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'no-referrer');
   next();
 });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
 const wrap = (fn) => (req, res) =>
-  fn(req, res).catch((err) => res.status(err.status || 500).json({ error: err.message }));
+  fn(req, res).catch((err) => res.status(err.status || 500).json({ error: redact(err.message) }));
 
 function readRegion(req) {
   const region = String(req.query.region || '').toLowerCase();
@@ -1286,21 +1444,19 @@ function requireJson(req) {
 
 app.use(express.json({ limit: '10kb' }));
 
-app.get('/api/status', (req, res) => res.json({ hasKey: !!API_KEY, version: APP_VERSION, client: !!lcuState.connected }));
+app.get('/api/status', (req, res) => res.json({ hasKey: !!API_KEY, keyStorage: KEY_STORAGE, keyError: keyLoadError, version: APP_VERSION, client: !!lcuState.connected }));
 
 // Stoor die speler se eie Riot API-sleutel plaaslik (nooit in die app self ingebou nie)
 app.post('/api/settings', wrap(async (req, res) => {
   requireJson(req);
   const key = String((req.body && req.body.apiKey) || '').trim();
   if (key && !/^RGAPI-[0-9a-f-]{36}$/i.test(key)) throw httpError(400, 'That does not look like a Riot API key (it starts with RGAPI-).');
-  const cfg = loadConfig();
-  cfg.apiKey = key;
-  saveConfig(cfg);
+  storeKey(key);
   API_KEY = key;
   memCache.clear();
   if (crawler) crawler.lastError = null;
   updateCrawler();
-  res.json({ hasKey: !!API_KEY });
+  res.json({ hasKey: !!API_KEY, keyStorage: KEY_STORAGE });
 }));
 
 app.get('/api/prefs', (req, res) => res.json(getPrefs()));
@@ -1465,8 +1621,10 @@ app.get('/api/builds/status', (req, res) => res.json({
   enabled: getPrefs().collectBuilds,
   hasKey: !!API_KEY,
   region: crawlRegion(),
+  lastError: crawler.lastError ? redact(crawler.lastError) : null,
   sharedMatches: remoteInfo.matches,
   sharedUpdated: remoteInfo.updated,
+  data: dataInfo(),
   sharedRegions: remoteInfo.regions.map((r) => REGION_NAMES[r] || r.toUpperCase()),
 }));
 
@@ -1487,6 +1645,7 @@ app.get('/api/builds/champion/:id', wrap(async (req, res) => {
     }
   }
   b.riotRoles = riotPositions.map[id] || [];
+  b.data = dataInfo();
   res.json(b);
 }));
 
@@ -1527,11 +1686,46 @@ app.post('/api/blitz/close', wrap(async (req, res) => {
     // Blitz kry nie kans om sy sets op te ruim nie: anders wys sy laaste set in die winkel vir elke champion
     if (getPrefs().replaceBlitzSets) {
       const n = await lcu.removeBlitzShopFiles().catch(() => 0);
-      if (n) logEvent(`Removed ${n} item set${n === 1 ? '' : 's'} Blitz left in League's shop folder.`);
+      if (n) logEvent(`Moved ${n} item set${n === 1 ? '' : 's'} Blitz left in League's shop folder to RiftScout's backup (restore in Settings).`);
     }
   }
   res.json(r);
 }));
+// Rugsteune: rune pages wat RiftScout vervang het, en Blitz se item sets wat RiftScout geskuif het
+app.get('/api/backups', (req, res) => res.json({
+  runes: readRuneBackups().map(({ id, name, primaryStyleId, subStyleId, selectedPerkIds, at, restoredAt }) =>
+    ({ id, name, primaryStyleId, subStyleId, keystone: selectedPerkIds[0] || 0, at, restoredAt: restoredAt || null })),
+  blitz: lcu.listBlitzBackups().map((e) => ({ ...e, from: e.kind !== 'file' ? 'your League account'
+    : path.basename(path.dirname(path.dirname(e.from))) === 'Global' ? 'League\'s shop folder, shown for every champion' : 'a champion\'s item set folder' })),
+}));
+app.post('/api/runes/restore', wrap(async (req, res) => {
+  requireJson(req);
+  const id = String((req.body && req.body.id) || '');
+  const list = readRuneBackups();
+  const e = list.find((x) => x.id === id);
+  if (!e) throw httpError(404, 'That backup no longer exists.');
+  // RiftScout se eie bladsy mag net plek maak as dit nie in champ select of 'n game gekies is nie
+  const busy = ['ChampSelect', 'GameStart', 'InProgress', 'Reconnect'].includes(lcuState.phase);
+  const r = await lcu.restoreRunePage(e, { freeSelected: !busy });
+  if (r.ok) {
+    // Lees die lys weer: 'n invoer kon intussen 'n nuwe rugsteun bygevoeg het
+    const now = readRuneBackups();
+    const x = now.find((y) => y.id === id);
+    if (x) { x.restoredAt = Date.now(); writeRuneBackups(now); }
+  }
+  logEvent(r.ok
+    ? `Restored your rune page "${e.name}" from RiftScout's backup${r.freed ? ` (made room by removing RiftScout's own page "${r.freed}")` : ''}.`
+    : `Could not restore the rune page "${e.name}": ${r.error}`);
+  res.json(r);
+}));
+app.post('/api/blitz/restore', wrap(async (req, res) => {
+  requireJson(req);
+  const id = String((req.body && req.body.id) || '');
+  const r = await lcu.restoreBlitzBackup(id);
+  logEvent(r.ok ? `Put a Blitz item set back from RiftScout's backup (${r.to === 'your League account item sets' ? r.to : path.basename(r.to)}).` : `Could not restore a Blitz item set: ${r.error}`);
+  res.json(r.ok ? { ok: true } : r);
+}));
+
 app.post('/api/lcu/import', wrap(async (req, res) => {
   requireJson(req);
   const championId = Number(req.body.championId);
@@ -1542,6 +1736,10 @@ app.post('/api/lcu/import', wrap(async (req, res) => {
   const vs = Number(req.body.vs) || null;
   const runeIndex = Math.max(0, Math.min(2, Number(req.body.runeIndex) || 0));
   lastImport = await doImport(championId, role, what, lcuState.champSelect, vs, runeIndex);
+  // Ook jou eie invoer in die aktiwiteit-lys (veral as 'n rune page vervang of Blitz se set geskuif is)
+  const cname = (DD && DD.champions[championId] && DD.champions[championId].name) || `champion ${championId}`;
+  const parts = Object.entries(lastImport.results || {}).map(([k, v]) => `${k} ${resultText(v)}${importNote(k, v)}`);
+  logEvent(`You imported for ${cname}${role ? ` ${ROLE_NAMES[role] || role}` : ''}: ${parts.join(', ') || lastImport.error || 'nothing imported'}`);
   // Het jy self runes vir jou champion in champ select gekies? Dan oorskryf die outomatiese invoer dit nie
   const cs = lcuState.champSelect;
   if (what.has('runes') && lcuState.phase === 'ChampSelect' && cs && cs.championId === championId && lastImport.results && lastImport.results.runes && lastImport.results.runes.ok) {
@@ -1558,20 +1756,24 @@ app.use((err, req, res, next) => {
   const msg = err.type === 'entity.parse.failed' ? 'Invalid JSON.'
     : err.type === 'entity.too.large' ? 'Request too large.'
       : status < 500 ? (err.expose && err.message) || 'Bad request.' : 'Something went wrong.';
-  if (status >= 500) console.error(err);
-  res.status(status).json({ error: msg });
+  if (status >= 500) console.error(redact(err && err.stack ? err.stack : err));
+  res.status(status).json({ error: redact(msg) });
 });
 
 // ---------- Begin ----------
-function startServer({ port = 3000, dataDir = __dirname } = {}) {
+function startServer({ port = 3000, dataDir = __dirname, secrets = null } = {}) {
   DATA_DIR = dataDir;
   CACHE_DIR = path.join(DATA_DIR, 'cache', 'matches');
   CONFIG_FILE = path.join(DATA_DIR, 'config.json');
   CONFIG = null;
+  SECRETS = secrets;
   fs.mkdirSync(CACHE_DIR, { recursive: true });
+  lcu.setBackupDir(DATA_DIR); // Blitz se sets word hierheen geskuif, nie uitgevee nie
   loadActivity();
-  const saved = loadConfig().apiKey;
-  if (saved) API_KEY = saved;
+  KEY_STORAGE = 'none';
+  const saved = loadSavedKey();
+  API_KEY = saved || ENV_KEY;
+  if (!saved && ENV_KEY) KEY_STORAGE = 'env';
 
   if (!db) {
     db = new builds.BuildDB(path.join(DATA_DIR, 'builds', 'builds.json'));
@@ -1583,7 +1785,7 @@ function startServer({ port = 3000, dataDir = __dirname } = {}) {
       hasKey: () => !!API_KEY,
       isUserBusy: () => Date.now() - lastUserActivity < 15000,
       paceMs: CRAWL_PACE_MS,
-      log: (m) => console.log(m),
+      log: (m) => console.log(redact(m)),
     });
     const loadDD = () => getDDragon().catch(() => setTimeout(loadDD, 60000));
     loadDD();
@@ -1623,7 +1825,7 @@ async function isBusy() {
 }
 
 module.exports = { startServer, getLiveData, getPrefs, saveBuildData, cleanupOnQuit, setUpdateState, onInstallRequest, isBusy, onChampSelectStart,
-  _test: { itemSets, itemBlocks, liveLanes } };
+  _test: { itemSets, itemBlocks, liveLanes, logEvent, redact } };
 
 if (require.main === module) {
   startServer({ port: Number(process.env.PORT) || 3000 }).then((port) => {
