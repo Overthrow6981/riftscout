@@ -2,7 +2,9 @@
 # in die "build-data" release. Elke RiftScout-app laai dit af, sodat almal dadelik builds het.
 #
 # Nodig: 'n repo-secret RIOT_API_KEY (Settings > Secrets and variables > Actions).
-# 'n Development key verval elke 24 uur; 'n Personal API key van developer.riotgames.com verval nie.
+# 'n Development key verval elke 24 uur. Riot se portaal (developer.riotgames.com/docs/portal): 'n publieke produk
+# mag nie 'n development- of personal key gebruik nie; dit het 'n Production key nodig (sien README).
+# Elke run skryf build-status.json (ook as die sleutel verval het); builds.json net as daar nuwe games is.
 
 name: Collect build data
 
@@ -32,11 +34,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 230
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Check for Riot API key
         id: key
@@ -50,25 +52,50 @@ jobs:
             echo "ok=true" >> "$GITHUB_OUTPUT"
           fi
 
+      # Ook sonder sleutel: dan skryf die versamelaar net 'n status "key_missing" (die run bly groen)
       - name: Download previous data
-        if: steps.key.outputs.ok == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release download build-data -p 'builds*.json' --clobber || echo "No previous data yet."
+        run: gh release download build-data -p 'builds*.json' -p 'build-status.json' --clobber || echo "No previous data yet."
 
+      # Skryf altyd build-status.json; builds.json verander net as daar nuwe games is (published=true)
       - name: Collect matches
-        if: steps.key.outputs.ok == 'true'
+        id: collect
+        continue-on-error: true
         env:
           RIOT_API_KEY: ${{ secrets.RIOT_API_KEY }}
-        run: node tools/collect.js --region "${{ github.event.inputs.region || 'all' }}" --minutes "${{ github.event.inputs.minutes || '200' }}" --file builds.json --seen builds-seen.json
+        run: node tools/collect.js --region "${{ github.event.inputs.region || 'all' }}" --minutes "${{ github.event.inputs.minutes || '200' }}" --file builds.json --seen builds-seen.json --status build-status.json
 
+      - name: Make sure the release exists
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view build-data > /dev/null 2>&1 || gh release create build-data --prerelease --latest=false \
+            --title "Build data" --notes "Build statistics collected automatically from high-elo ranked games. Used by the RiftScout app - not an app release."
+
+      # Net as daar nuwe games is: anders sou die app 'n nuwe "laas opgedateer"-tyd wys sonder nuwe data
       - name: Publish data
-        if: steps.key.outputs.ok == 'true' && always()
+        if: always() && steps.collect.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           [ -f builds.json ] || exit 0
-          gh release view build-data > /dev/null 2>&1 || gh release create build-data --prerelease --latest=false \
-            --title "Build data" --notes "Build statistics collected automatically from high-elo ranked games. Used by the RiftScout app - not an app release."
           gzip -9 -kf builds.json
           gh release upload build-data builds.json builds.json.gz builds-seen.json --clobber
+
+      - name: Publish collector status
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -f build-status.json ] || exit 0
+          cat build-status.json
+          gh release upload build-data build-status.json --clobber
+
+      # Die run bly rooi as die versameling misluk het (dan kry die eienaar 'n e-pos), maar eers ná die status
+      - name: Fail if collecting failed
+        if: steps.key.outputs.ok == 'true' && steps.collect.outcome == 'failure'
+        run: |
+          echo "Collecting failed: ${{ steps.collect.outputs.error }}"
+          exit 1
