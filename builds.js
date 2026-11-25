@@ -245,6 +245,7 @@ class BuildDB {
     const P = this.data.patches[patch] || (this.data.patches[patch] = { matches: 0, champs: {} });
     P.matches++;
     this.data.matches++;
+    this.data.lastMatchAt = Date.now(); // wanneer die nuutste game bygevoeg is ("updated" is net die stoortyd)
     for (const r of rows) {
       const C = P.champs[r.championId] || (P.champs[r.championId] = {});
       const s = C[r.role] || (C[r.role] = emptyRole());
@@ -703,6 +704,6 @@ class Crawler {
 module.exports = {
   ROLES, PLATFORM_ROUTE, itemsFromDDragon, itemClassifier, analyzeMatch, patchOf, comparePatch,
   runeKey, parseRuneKey, maxOrder, BuildDB, SeenSet, Crawler, recommend, buildPath,
-  matchups, counterPicks, bestInRole, guessRoles, MATCHUP_MIN, KEEP_PATCHES,
+  matchups, counterPicks, bestInRole, guessRoles, MATCHUP_MIN, KEEP_PATCHES, smoothed,
   itemProfile, profileSimilarity, metaSimilarity, weightedMerge, setValidity,
 };

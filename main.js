@@ -2,7 +2,7 @@
 // Begin die plaaslike server, maak die hoofvenster oop
 // en kyk outomaties vir opdaterings op GitHub Releases.
 
-const { app, BrowserWindow, shell, dialog } = require('electron');
+const { app, BrowserWindow, shell, dialog, safeStorage, session } = require('electron');
 const { autoUpdater } = require('electron-updater');
 const { startServer, getPrefs, saveBuildData, cleanupOnQuit, setUpdateState, onInstallRequest, isBusy, onChampSelectStart } = require('./server');
 const updates = require('./updater');
@@ -20,11 +20,20 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 async function boot() {
+  // Die blad vra niks (kamera, mikrofoon, kennisgewings, ligging ...): Electron sê andersins by verstek ja
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => callback(false));
+  session.defaultSession.setPermissionCheckHandler(() => false);
   // Vaste poort sodat die blad se oorsprong (en dus localStorage: laaste soektog ens.) dieselfde bly.
   // As die poort besig is, kies die stelsel 'n vrye een.
   const dataDir = app.getPath('userData');
   try {
-    port = await startServer({ port: 51735, dataDir }).catch(() => startServer({ port: 0, dataDir }));
+    // Die opsionele Riot-sleutel word met Windows se eie versleuteling (DPAPI, via safeStorage) gestoor
+    const secrets = {
+      available: () => safeStorage.isEncryptionAvailable(),
+      encrypt: (text) => safeStorage.encryptString(String(text)).toString('base64'),
+      decrypt: (b64) => safeStorage.decryptString(Buffer.from(String(b64), 'base64')),
+    };
+    port = await startServer({ port: 51735, dataDir, secrets }).catch(() => startServer({ port: 0, dataDir, secrets }));
   } catch (err) {
     dialog.showErrorBox('RiftScout', 'Could not start: ' + err.message);
     app.quit();
@@ -40,19 +49,25 @@ async function boot() {
     title: 'RiftScout',
     autoHideMenuBar: true,
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, webviewTag: false },
   });
   win.once('ready-to-show', () => win.show());
   win.loadURL(`http://127.0.0.1:${port}`);
 
-  // Eksterne skakels (bv. developer.riotgames.com) gaan na die gewone blaaier
+  // Eksterne skakels (bv. developer.riotgames.com) gaan na die gewone blaaier – net https, niks anders nie
+  // (shell.openExternal met file:, smb: ens. kan programme oopmaak)
+  const appOrigin = `http://127.0.0.1:${port}`;
+  const isApp = (url) => { try { return new URL(url).origin === appOrigin; } catch { return false; } };
+  const openSafe = (url) => { try { if (new URL(url).protocol === 'https:') shell.openExternal(url); } catch { /* ongeldige skakel */ } };
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    openSafe(url);
     return { action: 'deny' };
   });
   win.webContents.on('will-navigate', (e, url) => {
-    if (!url.startsWith(`http://127.0.0.1:${port}`)) { e.preventDefault(); shell.openExternal(url); }
+    if (!isApp(url)) { e.preventDefault(); openSafe(url); }
   });
+  win.webContents.on('will-redirect', (e, url) => { if (!isApp(url)) e.preventDefault(); });
+  win.webContents.on('will-attach-webview', (e) => e.preventDefault());
   win.on('closed', () => app.quit());
 
   setupUpdates();
