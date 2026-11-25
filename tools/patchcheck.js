@@ -12,6 +12,8 @@ const builds = require('../builds');
 const DDRAGON = process.env.DDRAGON_BASE || 'https://ddragon.leagueoflegends.com';
 const REPO = process.env.GITHUB_REPOSITORY || 'Overthrow6981/riftscout';
 const BUILD_DATA = process.env.REMOTE_BUILDS_URL || `https://github.com/${REPO}/releases/download/build-data/builds.json`;
+const BUILD_STATUS = process.env.REMOTE_STATUS_URL || BUILD_DATA.replace(/builds\.json$/, 'build-status.json');
+const STALE_MS = 24 * 3600e3;
 
 const fail = [];
 const warn = [];
@@ -109,7 +111,8 @@ async function main() {
     const patches = Object.keys(data.patches || {}).sort(builds.comparePatch).reverse();
     const counts = patches.map((p) => `${p}: ${(data.patches[p] || {}).matches || 0}`).join(', ');
     const updated = data.updated ? new Date(data.updated).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'unknown';
-    info.push(`Shared build data: ${data.matches || 0} games (${counts || 'no patches'}); last written ${updated}.`);
+    const newest = data.lastMatchAt ? new Date(data.lastMatchAt).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'unknown';
+    info.push(`Shared build data: ${data.matches || 0} games (${counts || 'no patches'}); newest game added ${newest}; file last written ${updated}.`);
     const now = (data.patches[patch] || {}).matches || 0;
     if (!now) {
       warn.push(`The shared build data has **no games from patch ${patch}** yet. If this stays so for more than a day after the patch, the collector is not collecting – usually the RIOT_API_KEY secret has expired (development keys last 24 hours).`);
@@ -132,6 +135,21 @@ async function main() {
     for (const p of Object.values(data.patches || {})) for (const id of Object.keys(p.champs || {})) inData.add(id);
     const fresh = champList.filter((c) => !inData.has(String(c.key))).map((c) => c.name);
     if (fresh.length) info.push(`Champions with no games in the build data yet (new or rarely played): ${fresh.slice(0, 15).join(', ')}${fresh.length > 15 ? ` and ${fresh.length - 15} more` : ''}. RiftScout falls back to Riot's own recommended runes and to similar champions' items for them.`);
+  }
+
+  // ---------- Versamelaar se status (build-status.json, sien tools/collect.js) ----------
+  let st = null;
+  try { st = await getJson(BUILD_STATUS); } catch { /* ouer versamelaar: nog geen statuslêer nie */ }
+  const when = (t) => (t ? new Date(t).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : 'never');
+  if (!st) {
+    warn.push('No collector status file (build-status.json) in the build-data release yet – it appears after the next "Collect build data" run.');
+  } else {
+    info.push(`Collector: last run ${when(st.lastRun)} (${st.ok ? `${st.newMatches} new games` : st.error || 'no new games'}); last run with new games ${when(st.lastSuccess)}; newest game added ${when(st.lastMatchAt)}.`);
+    if (st.error === 'key_invalid' || st.error === 'key_missing') {
+      fail.push(`The collector cannot collect: ${st.message || st.error}. The owner must renew the RIOT_API_KEY repository secret – the shared build data is not getting new games.`);
+    } else if (!st.lastSuccess || Date.now() - st.lastSuccess > STALE_MS) {
+      warn.push(`The shared build data has had no new games since ${when(st.lastSuccess)} (last error: ${st.message || st.error || 'none'}).`);
+    }
   }
 
   // ---------- Toetse ----------
