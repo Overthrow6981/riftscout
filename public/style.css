@@ -493,3 +493,21 @@ small.ovr { font-size: 10px; font-weight: 700; text-transform: uppercase; letter
   .lanes .ln-row { grid-template-columns: 52px 1fr 70px 1fr; }
   .lanes .ln-p .n { display: none; }
 }
+
+/* Data-kwaliteit: min games (grys met *), terugval, hoe vars die data is */
+.lowdata { color: var(--muted); text-decoration: underline dotted; cursor: help; font-weight: 400; }
+.mtag.warn { color: #f5b14c; border-color: #f5b14c; }
+.dataline { margin-top: 2px; }
+.datawarn { color: #f5b14c; margin-top: 2px; }
+.hint.warn { color: #f5b14c; }
+.legend { margin: 6px 2px 14px; }
+ol.counters .cbar span.low { background: var(--muted); opacity: .6; }
+ol.counters b.low { color: var(--muted); font-weight: 400; cursor: help; }
+/* Itemwaarde per lane: onsekere lanes */
+.lanes .ln-row.unsure .ln-p { opacity: .8; }
+.lanes .ln-role small.q { color: #f5b14c; font-size: 10px; cursor: help; white-space: nowrap; }
+.lanes .ln-note { margin-top: 6px; }
+/* Rugsteune in Settings */
+#backups li { align-items: center; }
+#backups img.ks { width: 18px; height: 18px; vertical-align: middle; margin-right: 4px; }
+#backups .linkbtn { margin-left: 6px; }

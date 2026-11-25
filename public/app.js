@@ -337,26 +337,32 @@ async function pollLive() {
 
 // Wie is voor in elke lane (goud uit items, soos Blitz dit wys)
 function lanesCard(L) {
-  if (!L || !L.lanes || !L.lanes.length) return '';
+  if (!L || !Array.isArray(L.lanes) || (!L.lanes.length && L.laned !== false)) return '';
   const k = (n) => (Math.abs(n) >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n)));
   const side = (p, cls) => (p
     ? `<div class="ln-p ${cls} ${p.me ? 'me' : ''}"><img class="c" src="${dd.champions[p.championId] ? champImg(dd.champions[p.championId].id) : ''}" alt="" title="${esc(p.champion)}">
-        <div><div class="n">${esc(p.champion)}${p.me ? ' <small>(you)</small>' : ''}</div><div class="s">${k(p.gold)} gold · ${p.cs} CS · ${p.kills}/${p.deaths}/${p.assists}</div></div></div>`
+        <div><div class="n">${esc(p.champion)}${p.me ? ' <small>(you)</small>' : ''}</div><div class="s">${k(p.gold)} in items · ${p.cs} CS · ${p.kills}/${p.deaths}/${p.assists}</div></div></div>`
     : `<div class="ln-p ${cls} empty"><small>–</small></div>`);
   const rows = L.lanes.map((l) => {
     const d = l.diff;
     const lead = d == null ? '' : d === 0 ? '<b>even</b>' : `<b class="${d > 0 ? 'good' : 'bad'}">${d > 0 ? '+' : '−'}${k(Math.abs(d))}</b>`;
-    const who = d == null || d === 0 ? '' : `<small>${d > 0 ? 'your team ahead' : 'enemy ahead'}</small>`;
-    return `<div class="ln-row ${l.role === L.myRole ? 'mine' : ''}">
-      <div class="ln-role">${esc(ROLE_NAMES[l.role] || l.role)}${l.guessed ? ' <small title="Lane guessed from the champions and Smite">?</small>' : ''}</div>
+    const who = d == null || d === 0 ? '' : `<small>${d > 0 ? 'more item value' : 'less item value'}</small>`;
+    const unsure = l.allyGuessed && l.enemyGuessed ? 'Both players in this lane are guessed from their champions and Smite'
+      : l.allyGuessed ? 'Your teammate\'s lane is guessed from their champion' : l.enemyGuessed ? 'The enemy\'s lane is guessed from their champion and Smite – it may be someone else' : '';
+    return `<div class="ln-row ${l.role === L.myRole ? 'mine' : ''} ${l.guessed ? 'unsure' : ''}">
+      <div class="ln-role">${esc(ROLE_NAMES[l.role] || l.role)}${l.guessed ? ` <small class="q" title="${esc(unsure)}">? guessed</small>` : ''}</div>
       ${side(l.ally, 'ally')}<div class="ln-diff">${lead}${who}</div>${side(l.enemy, 'enemy')}</div>`;
   }).join('');
   const td = L.allyGold - L.enemyGold;
+  const notes = [];
+  if (L.lanes.some((l) => l.guessed)) notes.push('Lanes marked <b>? guessed</b> are worked out from the champions and Smite, so the pairing may be wrong.');
+  if (L.teamKnown === false) notes.push('RiftScout could not find you in the game, so "your team" is assumed to be the blue side.');
   return `<div class="card lanes">
-    <h3>Who's ahead <small>– gold from items (unspent gold of other players isn't visible to apps)</small></h3>
-    ${rows}
-    <div class="ln-row total"><div class="ln-role">Team</div><div class="ln-p ally"><div class="s">${k(L.allyGold)}</div></div>
+    <h3>Item value by lane <small title="Sum of the current items' shop prices. Not total gold: unspent gold, sold items and used consumables (potions, wards) don't count – apps can't see other players' gold.">– value of the items each player holds now, not total gold</small></h3>
+    ${L.laned === false ? '<div class="sub">No lanes in this mode – team totals only.</div>' : rows}
+    <div class="ln-row total"><div class="ln-role" title="Item value of the whole team">Team</div><div class="ln-p ally"><div class="s">${k(L.allyGold)}</div></div>
       <div class="ln-diff"><b class="${td >= 0 ? 'good' : 'bad'}">${td >= 0 ? '+' : '−'}${k(Math.abs(td))}</b></div><div class="ln-p enemy"><div class="s">${k(L.enemyGold)}</div></div></div>
+      ${notes.length ? `<div class="sub ln-note">${notes.join(' ')}</div>` : ''}
   </div>`;
 }
 
@@ -509,12 +515,54 @@ async function loadActivity() {
   } catch { /* nie belangrik nie */ }
 }
 
+// Rugsteune: rune pages wat RiftScout vervang het en Blitz se sets wat dit geskuif het, elk met "Restore"
+async function loadBackups() {
+  try {
+    const b = await api('/api/backups');
+    const when = (t) => esc(new Date(t).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' }));
+    const rows = [
+      ...b.runes.map((e) => `<li><time>${when(e.at)}</time>${dd && e.keystone ? runeImgTag(e.keystone, 'ks') : ''} Rune page <b>${esc(e.name)}</b>
+        <span class="sub">(replaced because all pages were full)</span>
+        <button type="button" class="linkbtn" data-restore-rune="${esc(e.id)}">${e.restoredAt ? 'Restore again' : 'Restore'}</button>
+        ${e.restoredAt ? `<span class="sub">restored ${when(e.restoredAt)}</span>` : ''}</li>`),
+      ...b.blitz.map((e) => `<li><time>${when(e.at)}</time>Blitz item set <b>${esc(e.title || e.name)}</b>
+        <span class="sub">(was in ${esc(e.from)}${e.times > 1 ? `; moved ${e.times}×` : ''})</span>
+        <button type="button" class="linkbtn" data-restore-blitz="${esc(e.id)}" title="Puts the file back exactly where it was. While 'Don't let the Blitz app overwrite RiftScout' is on, RiftScout will move it again at the next import.">${e.restoredAt ? 'Restore again' : 'Restore'}</button>
+        ${e.restoredAt ? `<span class="sub">restored ${when(e.restoredAt)}</span>` : ''}</li>`),
+    ];
+    $('backups').innerHTML = rows.length ? rows.join('') : '<li class="sub">Nothing yet – RiftScout hasn\'t replaced a rune page or moved a Blitz set.</li>';
+  } catch { /* nie belangrik nie */ }
+}
+$('backups').addEventListener('click', async (e) => {
+  const rb = e.target.closest('[data-restore-rune]');
+  const bb = e.target.closest('[data-restore-blitz]');
+  if (!rb && !bb) return;
+  const msg = $('backupMsg');
+  if (bb && !confirm('Put this Blitz item set back into League\'s item set folder? If it is in the shop folder it shows for every champion until Blitz or RiftScout removes it.')) return;
+  try {
+    const r = rb ? await postJson('/api/runes/restore', { id: rb.dataset.restoreRune }) : await postJson('/api/blitz/restore', { id: bb.dataset.restoreBlitz });
+    msg.textContent = r.ok
+      ? (rb ? `Rune page restored as a new page${r.freed ? ` (RiftScout removed its own page "${r.freed}" to make room)` : ''}. Select it in League.` : 'Blitz item set put back.')
+      : r.error;
+    msg.className = 'hint ' + (r.ok ? 'ok' : 'err');
+  } catch (err) { msg.textContent = err.message; msg.className = 'hint err'; }
+  loadBackups();
+  loadActivity();
+});
+
 async function openSettings() {
   loadActivity();
+  loadBackups();
+  $('backupMsg').textContent = '';
   $('settingsMsg').textContent = '';
   $('settingsMsg').className = 'hint';
-  $('keyState').textContent = hasKey ? '✓ A Riot API key is saved. Paste a new one below to replace it.' : 'No key saved – that\'s fine.';
-  $('keyState').className = 'hint ' + (hasKey ? 'ok' : '');
+  let st = null;
+  try { st = await api('/api/status'); } catch { /* gebruik wat ons weet */ }
+  const where = st && st.keyStorage === 'encrypted' ? ' It is stored encrypted with your Windows account.'
+    : st && st.keyStorage === 'plain' ? ' Windows encryption isn\'t available, so it is stored as plain text in RiftScout\'s settings file.' : '';
+  $('keyState').textContent = st && st.keyError ? st.keyError
+    : hasKey ? `✓ A Riot API key is saved.${where} Paste a new one below to replace it.` : 'No key saved – that\'s fine.';
+  $('keyState').className = 'hint ' + (st && st.keyError ? 'err' : hasKey ? 'ok' : '');
   $('removeKey').classList.toggle('hidden', !hasKey);
   try {
     const p = await api('/api/prefs');
@@ -584,8 +632,29 @@ const champIcon = (id) => champImg(dd.champions[id] ? dd.champions[id].id : '');
 let lcuConnected = false;
 const itemName = (id) => (dd.items && dd.items[id] ? dd.items[id].name : `Item ${id}`);
 const itemIcon = (id, cls = '') => `<div class="bi ${cls}" title="${esc(itemName(id))}"><img src="${itemImg(id)}" alt="" loading="lazy"></div>`;
-const wr = (e) => (e && e.n ? pct(e.w / e.n) : '–');
-const laneTxt = (l, suffix) => (l && l[0] ? ` · ${pct(l[1] / l[0])}${suffix}` : '');
+// Onder RELIABLE_N games is 'n wenpersentasie nie betroubaar nie: grys met 'n * en die rede as wenk (nooit groen/rooi)
+const RELIABLE_N = 30;
+const lowTip = (n) => `Only ${n} game${n === 1 ? '' : 's'} – too few for a reliable win rate`;
+const lowPct = (x, n) => `<span class="lowdata" title="${lowTip(n)}">${pct(x)}*</span>`;
+const wr = (e) => (e && e.n ? (e.n < RELIABLE_N ? lowPct(e.w / e.n, e.n) : pct(e.w / e.n)) : '–');
+// wins/games met kleur (good/bad), maar net as daar genoeg games is
+const wrTag = (wins, games) => (!games ? '–' : games < RELIABLE_N ? lowPct(wins / games, games)
+  : `<b class="${wins / games >= 0.5 ? 'good' : 'bad'}">${pct(wins / games)}</b>`);
+const laneTxt = (l, suffix) => (l && l[0] ? ` · ${l[0] < RELIABLE_N ? lowPct(l[1] / l[0], l[0]) : pct(l[1] / l[0])}${suffix}` : '');
+const LOW_LEGEND = `<div class="sub legend">* Grey win rates come from fewer than ${RELIABLE_N} games – treat them as a rough hint, not a reliable number.</div>`;
+// Waar die syfers vandaan kom: hoe baie games, watter patch, hoe vars (die nuutste game, nie wanneer 'n lêer geskryf is nie)
+function dataLine(info, patches) {
+  if (!info) return '';
+  const bits = [`from ${esc(info.source)}`];
+  if (patches && patches.length) bits.push(`patch ${esc(patches.join(' + '))}`);
+  bits.push(info.newestGameAt ? `newest game added ${timeAgo(info.newestGameAt)}` : 'last update unknown');
+  const warn = [];
+  if (info.currentPatch && patches && patches.length && !patches.includes(info.currentPatch)) warn.push(`League is on patch ${esc(info.currentPatch)} – these games are from an older patch.`);
+  if (info.stale) warn.push(info.newestGameAt ? `No new games since ${esc(new Date(info.newestGameAt).toLocaleDateString())} – the build data may be out of date.` : 'RiftScout can\'t tell how fresh this build data is.');
+  return `<div class="sub dataline">${bits.join(' · ')}</div>${warn.length ? `<div class="sub datawarn">⚠ ${warn.join(' ')}</div>` : ''}`;
+}
+const aramNotice = () => (lastCs && lastCs.aram ? `<div class="notice">ARAM: RiftScout has no ARAM data. Everything here comes from <b>ranked Summoner's Rift games</b>
+  – use it as a starting point. In ARAM RiftScout only imports runes (from this Summoner's Rift data), not items.</div>` : '');
 
 function champList() {
   return Object.entries(dd.champions || {}).map(([key, c]) => ({ key: Number(key), ...c })).sort((a, b) => a.name.localeCompare(b.name));
@@ -704,13 +773,13 @@ function itemsLiteCard(it, name) {
     : it.kind === 'mixed'
       ? `${esc(name)}'s own ${it.games} high-elo game${it.games === 1 ? '' : 's'}, plus the champions whose item builds are closest to ${esc(name)}'s: ${like}.`
       : `No games for ${esc(name)} yet, so these come from the champions most like ${esc(name)}: ${like}.`;
-  const tag = it.kind === 'own' || it.kind === 'champion' ? 'own games' : it.kind === 'mixed' ? 'few games' : 'similar champions';
+  const tag = it.kind === 'own' || it.kind === 'champion' ? `own games · ${it.games}` : it.kind === 'mixed' ? 'fallback · few games' : 'fallback · similar champions';
   const showStats = it.kind === 'own' || it.kind === 'champion';
   const st = (e) => (showStats ? `<div class="sub">${wr(e)} · ${e.n}</div>` : '');
   const row = (e, ids, extra) => `<div class="irow">${ids.map((id) => itemIcon(id)).join(extra || '')}${st(e)}</div>`;
   const opts = (list, lbl) => (list && list.length ? `<div class="iopt"><div class="ilabel">${lbl}</div>${list.map((e) => `
       <div class="ichoice">${itemIcon(e.id)}${showStats ? `<div class="sub">${wr(e)}<br>${e.n}</div>` : ''}</div>`).join('')}</div>` : '');
-  return `<div class="card"><h3>Items <span class="mtag">${tag}</span></h3>
+  return `<div class="card"><h3>Items <span class="mtag ${showStats ? '' : 'warn'}">${tag}</span></h3>
     <div class="sub" style="margin-bottom:8px">${label}</div>
     <div class="items-grid">
       ${it.start.length ? `<div class="iblock"><div class="ilabel">Starting items</div>${row(it.start[0], it.start[0].ids)}</div>` : ''}
@@ -751,14 +820,15 @@ function renderBuild() {
       <img class="bh-icon" src="${champImg(c.id)}" alt="">
       <div class="bh-main">
         <div class="bh-name">${esc(c.name)} <span>${esc(ROLE_NAMES[b.role] || '')}</span></div>
-        <div class="sub">${enough ? `${r.games} games · ${pct(r.wins / r.games)} win rate${laneTxt(r.lane, ' lane')} · patch ${esc(b.patches.join(' + '))}` : riot ? "Riot's recommended setup from the League client" : 'No RiftScout stats for this champion yet'}</div>
+        <div class="sub">${enough ? `${r.games} games · ${wr({ n: r.games, w: r.wins })} win rate${laneTxt(r.lane, ' lane')}${r.games < RELIABLE_N ? ` <span class="mtag warn" title="${lowTip(r.games)}">low data</span>` : ''}` : riot ? "Riot's recommended setup from the League client <span class=\"mtag warn\">fallback</span>" : 'No RiftScout stats for this champion yet'}</div>
+        ${enough || (b.items && b.items.games) ? dataLine(b.data, b.patches) : ''}
         <div class="roles">${roles}</div>
         ${b.opponents.length ? `<div class="vs-pick">vs <select id="vsSelect">
           <option value="">any opponent</option>
           ${b.opponents.map((o) => `<option value="${o.championId}" ${r && r.vs && r.vs.championId === o.championId ? 'selected' : ''}>${esc(champName(o.championId))} (${o.games})</option>`).join('')}
         </select></div>` : ''}
         ${r && r.vs ? `<div class="vs-line"><img src="${champIcon(r.vs.championId)}" alt="">
-          ${r.vs.games >= 3 ? `<b class="${r.vs.wins / r.vs.games >= 0.5 ? 'good' : 'bad'}">${pct(r.vs.wins / r.vs.games)}</b> game${r.vs.lane && r.vs.lane[0] ? ` · <b class="${r.vs.lane[1] / r.vs.lane[0] >= 0.5 ? 'good' : 'bad'}">${pct(r.vs.lane[1] / r.vs.lane[0])}</b> lane` : ''} vs ${esc(champName(r.vs.championId))} · ${r.vs.games} games` : `Few games vs ${esc(champName(r.vs.championId))} yet (${r.vs.games})`}
+          ${r.vs.games >= 3 ? `${wrTag(r.vs.wins, r.vs.games)} game${r.vs.lane && r.vs.lane[0] ? ` · ${wrTag(r.vs.lane[1], r.vs.lane[0])} lane` : ''} vs ${esc(champName(r.vs.championId))} · ${r.vs.games} games${r.vs.games < RELIABLE_N ? ' <span class="mtag warn">few games</span>' : ''}` : `Few games vs ${esc(champName(r.vs.championId))} yet (${r.vs.games})`}
           ${r.fromMatchup.length ? ' · <span class="mtag">matchup build</span>' : ` · general build (matchup build from ${b.matchupMin} games)`}</div>` : ''}
       </div>
       <div class="bh-actions" title="${esc(tip)}">
@@ -768,7 +838,7 @@ function renderBuild() {
     </div>
     <div id="importMsg" class="hint"></div>`;
   if (!enough && riot) {
-    $('buildView').innerHTML = head + `<div class="notice">RiftScout's own win-rate stats for ${esc(c.name)} aren't in yet, so the runes are
+    $('buildView').innerHTML = head + aramNotice() + `<div class="notice">Fallback: RiftScout's own win-rate stats for ${esc(c.name)} aren't in yet, so the runes are
       <b>Riot's recommended setup</b> straight from your League client.${b.items ? ' The items below go into the game\'s shop as an item set.' : ' Items: use the recommended items in the game\'s shop.'}</div>
       <div class="build-grid">
         <div class="card"><h3>Runes <span class="mtag">Riot recommended</span></h3>${runeTreeHtml(riot)}</div>
@@ -779,7 +849,7 @@ function renderBuild() {
   }
   if (!enough) {
     const g = r ? r.games : 0;
-    $('buildView').innerHTML = head + `<div class="notice">Not enough games for ${esc(c.name)}${b.role ? ' ' + esc(ROLE_NAMES[b.role]) : ''} yet
+    $('buildView').innerHTML = head + aramNotice() + `<div class="notice">Not enough games for ${esc(c.name)}${b.role ? ' ' + esc(ROLE_NAMES[b.role]) : ''} yet
       (${g} of ${b.minGames}). ${lcuConnected ? '' : "Open the League client to see Riot's recommended runes for this champion right away."}</div>${itemsLiteCard(b.items, c.name)}`;
     return;
   }
@@ -790,7 +860,7 @@ function renderBuild() {
   const skillGrid = seq ? `<table class="skillgrid"><tbody>${['Q', 'W', 'E', 'R'].map((k) => `<tr><th>${k}</th>${
     Array.from({ length: 15 }, (_, i) => `<td class="${seq[i] === k ? 'on' : ''}">${seq[i] === k ? i + 1 : ''}</td>`).join('')}</tr>`).join('')}</tbody></table>` : '';
 
-  $('buildView').innerHTML = head + `
+  $('buildView').innerHTML = head + aramNotice() + `
     <div class="build-grid">
       <div class="card"><h3>Runes${tag('runes')}</h3>${runeCardHtml(r)}</div>
       <div>
@@ -817,18 +887,19 @@ function renderBuild() {
       <div class="items-grid">
         ${opts(r.item4, '4th item')}${opts(r.item5, '5th item')}${opts(r.item6, '6th item')}
       </div>
-    </div>`;
+    </div>${LOW_LEGEND}`;
 }
 
 function matchupCard(b) {
   if (!b.strongAgainst.length && !b.weakAgainst.length) return '';
   const row = (m) => `<button class="mu" data-vs="${m.championId}" title="Show the build vs ${esc(champName(m.championId))}">
       <img src="${champIcon(m.championId)}" alt=""><span>${esc(champName(m.championId))}</span>
-      <b class="${m.wr >= 0.5 ? 'good' : 'bad'}">${pct(m.wr)}</b><small>${m.games}</small></button>`;
+      ${wrTag(m.wins, m.games)}<small>${m.games}</small></button>`;
   return `<div class="card"><h3>Matchups</h3><div class="mu-grid">
       <div><div class="ilabel">Strong against</div>${b.strongAgainst.map(row).join('') || '<div class="sub">No winning matchups yet.</div>'}</div>
       <div><div class="ilabel">Weak against (counters)</div>${b.weakAgainst.map(row).join('') || '<div class="sub">No losing matchups yet.</div>'}</div>
-    </div><div class="sub">Click a champion to see the build against it.</div></div>`;
+    </div><div class="sub">Click a champion to see the build against it. Matchups need at least 10 games and are ranked with few-game results
+      pulled toward 50%; the small number is the games behind each one.</div></div>`;
 }
 
 $('buildView').addEventListener('change', (e) => {
@@ -860,8 +931,9 @@ $('buildView').addEventListener('click', async (e) => {
 function importText(res) {
   if (res.error) return res.error;
   const names = { runes: 'Runes', items: 'Item set', spells: 'Spells' };
-  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced page "${v.replaced}")` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (with champions that build alike)' : ''}${v.method === 'shop' ? (v.sets > 1 ? ` (${v.sets} builds in the in-game shop)` : ' (opens first in the in-game shop)') : ''}${v.removedBlitz ? ' (Blitz\'s set removed)' : ''}${v.notSelected ? ' (but League did not select the page – pick it yourself)' : ''}` : v.error}`);
+  const parts = Object.entries(res.results || {}).map(([k, v]) => `${names[k]}: ${v.ok ? `imported ✓${v.replaced ? ` (replaced your page "${v.replaced}" – all pages were full${v.backupId ? '; restore it under Settings → Backups' : ''})` : ''}${v.kind === 'mixed' || v.kind === 'similar' ? ' (fallback: from champions that build alike)' : ''}${v.method === 'shop' ? (v.sets > 1 ? ` (${v.sets} builds in the in-game shop)` : ' (opens first in the in-game shop)') : ''}${v.removedBlitz ? ' (Blitz\'s set moved to a backup – Settings → Backups)' : ''}${v.notSelected ? ' (but League did not select the page – pick it yourself)' : ''}` : v.error}`);
   if (res.matchupSpecific && res.vsName) parts.unshift(`matchup build vs ${res.vsName}`);
+  if (res.games) parts.push(`from ${res.games} games${res.games < RELIABLE_N ? ' – low data' : ''}`);
   return parts.join(' · ');
 }
 
@@ -876,8 +948,13 @@ async function pollBuildStatus() {
     else if (!s.hasKey) parts.push(s.sharedMatches ? 'shared data updates every few hours' : 'build data is on its way – shared data updates every few hours');
     else if (s.lastError) parts.push(`collection stopped: ${s.lastError}`);
     else if (s.running) parts.push(`collecting from ${(s.region || '').toUpperCase()}: ${s.state}${s.session ? ` (+${s.session} this session)` : ''}`);
+    const d = s.data || {};
+    parts.push(d.newestGameAt ? `newest game added ${timeAgo(d.newestGameAt)}` : 'last update unknown');
+    const col = d.collector;
+    if (col && (col.error === 'key_invalid' || col.error === 'key_missing')) parts.push('the shared collector is paused (its Riot API key needs renewing) – no new shared games until then');
+    else if (d.stale) parts.push('no new games for a while – builds may be out of date');
     $('buildStatus').textContent = parts.join(' · ');
-    $('buildStatus').className = 'hint' + (s.lastError ? ' err' : '');
+    $('buildStatus').className = 'hint' + (s.lastError ? ' err' : d.stale ? ' warn' : '');
   } catch { /* ignore */ }
 }
 
@@ -897,9 +974,11 @@ async function loadCounters(enemyId, role, mineId) {
 const takenSet = (cs) => new Set([...(cs.enemies || []), ...(cs.bans || []),
   ...(cs.allies || []).filter((a) => !a.me && a.championId).map((a) => a.championId)]);
 const wrCls = (x) => (x >= 0.5 ? 'good' : 'bad');
+// Kleur net met genoeg games; anders grys met * (sien RELIABLE_N)
+const wrSpan = (x, n, suffix = '') => (n < RELIABLE_N ? `${lowPct(x, n)}${suffix}` : `<span class="${wrCls(x)}">${pct(x)}${suffix}</span>`);
 const pickLine = (x) => `<img src="${champIcon(x.championId)}" alt=""><b>${esc(champName(x.championId))}</b>
-  <span class="${wrCls(x.wr)}">${pct(x.wr)} win</span>${x.laneWr != null ? ` · <span class="${wrCls(x.laneWr)}">${pct(x.laneWr)} lane</span>` : ''}
-  <span class="sub">· ${x.games} game${x.games === 1 ? '' : 's'}${x.games < 10 ? ', few so far' : ''}</span>`;
+  ${wrSpan(x.wr, x.games, ' win')}${x.laneWr != null ? ` · ${wrSpan(x.laneWr, x.laneGames || 0, ' lane')}` : ''}
+  <span class="sub">· ${x.games} game${x.games === 1 ? '' : 's'}${x.games < RELIABLE_N ? ' – too few to be sure' : ''}</span>`;
 
 let csPanelHtml = '';
 let csSort = 'wr';
@@ -924,19 +1003,21 @@ function pickRows(c) {
   return vs.concat(overall.slice(0, Math.max(0, MIN_PICKS - vs.length)), weak);
 }
 // Klein lysie bo-aan: die top 3 keuses wat nog beskikbaar is
+// "Best picks" net uit teen-keuses met minstens 10 games (of sterk keuses in die rol): nie 3 gelukkige games nie
+const CHIP_MIN = 10;
 const topPicks = (rows, cs, n = 3) => {
   const taken = takenSet(cs);
-  return rows.filter((x) => x.src !== 'vsweak' && !taken.has(x.championId)).slice(0, n);
+  return rows.filter((x) => x.src !== 'vsweak' && (x.src === 'overall' || x.games >= CHIP_MIN) && !taken.has(x.championId)).slice(0, n);
 };
 const pickChip = (x) => `<span class="pick-chip" data-champ-chip="${x.championId}" title="${x.src === 'overall'
   ? 'Strong pick in this role overall – not enough games vs this enemy yet' : 'Wins most often against this enemy'}">
   <img src="${champIcon(x.championId)}" alt=""><b>${esc(champName(x.championId))}</b>
-  <span class="${wrCls(x.wr)}">${pct(x.wr)}</span>${x.src === 'overall' ? '<small class="ovr">overall</small>' : ''}</span>`;
+  ${wrSpan(x.wr, x.games)}${x.src === 'overall' ? '<small class="ovr">overall</small>' : ''}</span>`;
 
 // Tabel soos Blitz: champion, game-wenkoers, lane-wenkoers (voor in goud op 15 min) en hoeveel games
 function counterTable(list, cs, vsName) {
   const taken = takenSet(cs);
-  const cls = (x) => (x >= 0.5 ? 'good' : 'bad');
+  const cls = (x, n) => (n < RELIABLE_N ? 'low' : x >= 0.5 ? 'good' : 'bad');
   const grp = (x) => (x.src === 'overall' ? 1 : x.src === 'vsweak' ? 2 : 0);
   const sorted = [...list].sort((a, b) => grp(a) - grp(b) || (csSort === 'lane'
     ? ((b.laneScore ?? -1) - (a.laneScore ?? -1))
@@ -950,9 +1031,9 @@ function counterTable(list, cs, vsName) {
     <ol class="counters">${sorted.map((x) => `<li data-champ="${x.championId}" class="${taken.has(x.championId) ? 'taken' : ''}"
         title="${taken.has(x.championId) ? 'Already picked or banned' : 'Click for runes and build'}">
         <img src="${champIcon(x.championId)}" alt=""><span class="cn">${esc(champName(x.championId))}${taken.has(x.championId) ? ' <small>taken</small>' : ''}${x.src === 'overall' && vsName ? ' <small class="ovr" title="Not enough games vs this enemy yet – this is its win rate in the role overall">overall</small>' : ''}</span>
-        <span class="cval"><span class="cbar"><span class="${cls(x.wr)}" style="width:${Math.round(x.wr * 100)}%"></span></span><b class="${cls(x.wr)}">${pct(x.wr)}</b></span>
-        <span class="cval">${x.laneWr == null ? '<span class="sub">–</span>' : `<span class="cbar"><span class="${cls(x.laneWr)}" style="width:${Math.round(x.laneWr * 100)}%"></span></span><b class="${cls(x.laneWr)}">${pct(x.laneWr)}</b>`}</span>
-        <span class="sub ${x.games < 10 ? 'few' : ''}" ${x.games < 10 ? 'title="Few games – less reliable"' : ''}>${x.games.toLocaleString()}</span></li>`).join('')}</ol>`;
+        <span class="cval"><span class="cbar"><span class="${cls(x.wr, x.games)}" style="width:${Math.round(x.wr * 100)}%"></span></span><b class="${cls(x.wr, x.games)}" ${x.games < RELIABLE_N ? `title="${lowTip(x.games)}"` : ''}>${pct(x.wr)}${x.games < RELIABLE_N ? '*' : ''}</b></span>
+        <span class="cval">${x.laneWr == null ? '<span class="sub">–</span>' : `<span class="cbar"><span class="${cls(x.laneWr, x.laneGames || 0)}" style="width:${Math.round(x.laneWr * 100)}%"></span></span><b class="${cls(x.laneWr, x.laneGames || 0)}" ${(x.laneGames || 0) < RELIABLE_N ? `title="${lowTip(x.laneGames || 0)}"` : ''}>${pct(x.laneWr)}${(x.laneGames || 0) < RELIABLE_N ? '*' : ''}</b>`}</span>
+        <span class="sub ${x.games < RELIABLE_N ? 'few' : ''}" ${x.games < RELIABLE_N ? 'title="Few games – less reliable"' : ''}>${x.games.toLocaleString()}</span></li>`).join('')}</ol>`;
 }
 
 async function renderCsPanel(cs) {
@@ -970,8 +1051,11 @@ async function renderCsPanel(cs) {
     ? `Wrong lane opponent? Click the right enemy above.${cs.vsManual ? ' <a href="#" data-ep-reset="1">Use RiftScout\'s guess</a>' : ''}`
     : `Know who your ${roleName} opponent is? Click them above.`}</div>` : '';
   let body;
-  if (!cs.role) {
-    body = '<div class="sub">No lanes in this mode – counter picks are for Summoner\'s Rift draft and ranked.</div>';
+  if (cs.aram) {
+    body = `<div class="notice">ARAM: no lanes, and RiftScout has no ARAM data. The runes RiftScout imports for you come from
+      <b>ranked Summoner's Rift games</b> of your champion – a starting point, not tested in ARAM. Items are not imported in ARAM.</div>`;
+  } else if (!cs.role) {
+    body = '<div class="sub">No assigned lanes in this queue – RiftScout imports runes for your champion\'s most-played Summoner\'s Rift role. Counter picks need a known lane (draft and ranked).</div>';
   } else if (!cs.vs) {
     const b = await loadBest(cs.role);
     const list = (b && b.best) || [];
@@ -997,7 +1081,7 @@ async function renderCsPanel(cs) {
     let inner = '';
     if (rows.length) {
       inner += counterTable(rows, cs, vsName) + `<div class="sub">Click a champion for its runes and build vs ${esc(vsName)}.
-        Game % = wins the game, Lane % = ahead in gold at 15 min.${nVs < rows.length
+        Game % = wins the game, Lane % = ahead in gold at 15 min. Grey % with * = fewer than ${RELIABLE_N} games, not reliable yet.${nVs < rows.length
           ? ` ${nVs ? `The first ${nVs} are from games vs ${esc(vsName)}; ` : ''}champions marked <i>overall</i> are strong ${roleName} picks – there aren't enough games vs ${esc(vsName)} for them yet.` : ''}${nWeak
           ? ` The last ${nWeak === 1 ? 'one has' : `${nWeak} have`} lost more games than ${nWeak === 1 ? 'it' : 'they'} won vs ${esc(vsName)} so far.` : ''}</div>`;
     } else {
@@ -1075,7 +1159,10 @@ async function pollLcu() {
   }
   let text = `Champ select · ${c.name}${cs.role ? ' · ' + (ROLE_NAMES[cs.role] || '') : ''}${cs.vs ? ` vs ${champName(cs.vs)}` : ''}`;
   const li = st.lastImport;
-  if (li && li.championId === cs.championId) text += ' — ' + (li.source === 'riot' ? "Riot's recommended runes · " : '') + importText(li);
+  if (li && li.championId === cs.championId) {
+    text += ' — ' + (li.source === 'riot' ? "fallback: Riot's recommended runes (too few RiftScout games) · " : '') + importText(li);
+    if (cs.aram) text += " · ARAM: based on Summoner's Rift data, not ARAM games";
+  }
   else if (st.autoImport) text += ` — putting runes, items${cs.role && st.autoSpells ? ' and spells' : ''} into League…`;
   else text += ' — click Import to put the runes into League';
   banner.textContent = text;
